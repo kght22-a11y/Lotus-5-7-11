@@ -1,0 +1,9 @@
+[package]
+name = "lotus-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Host test harness and CLI for Lotus 5-7-11"
+
+[dependencies]
+lotus-core = { path = "../lotus-core" }
+crossterm = "0.28"

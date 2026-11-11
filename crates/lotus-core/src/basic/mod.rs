@@ -128,4 +128,15 @@ mod tests {
             _ => panic!("Expected StepBudgetExceeded, got {:?}", result),
         }
     }
+
+    #[test]
+    fn formula_cell_write_is_rejected_transactionally() {
+        let mut sheet = Sheet::new("main", "Main");
+        let formula = Coord::new(0, 0);
+        sheet.set_cell(Cell::formula(formula, "=1+2"));
+        let script = "SET_CELL(\"A1\", 99)";
+        let result = BasicRunner::execute(&mut sheet, Coord::new(1, 0), script, &[], &[formula], None);
+        assert!(matches!(result, Err(BasicError::Runtime(VmError::WriteToFormulaCell(c))) if c == formula));
+        assert!(matches!(sheet.get_cell(formula).unwrap().value, CellValue::Formula { .. }));
+    }
 }

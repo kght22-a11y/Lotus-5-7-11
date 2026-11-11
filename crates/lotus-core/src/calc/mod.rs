@@ -73,4 +73,37 @@ mod tests {
             _ => panic!("Expected #CYCLE!"),
         }
     }
+
+    #[test]
+    fn boolean_formula_cache_keeps_boolean_type() {
+        let mut sheet = Sheet::new("main", "Main");
+        sheet.set_cell(Cell::number(Coord::new(0, 0), 3.0));
+        sheet.set_cell(Cell::formula(Coord::new(1, 0), "=A1>5"));
+        sheet.set_cell(Cell::formula(Coord::new(2, 0), "=IF(B1,\"big\",\"small\")"));
+        CalcEngine::recalculate_sheet(&mut sheet, None).unwrap();
+        assert!(matches!(sheet.get_cell(Coord::new(1, 0)).unwrap().value, CellValue::Formula { cached_bool: Some(false), .. }));
+        assert!(matches!(&sheet.get_cell(Coord::new(2, 0)).unwrap().value, CellValue::Formula { cached_text: Some(v), .. } if v == "small"));
+    }
+
+    #[test]
+    fn named_formula_dependencies_are_ordered_and_cycles_detected() {
+        let mut sheet = Sheet::new("main", "Main");
+        sheet.set_cell(Cell::formula(Coord::new(0, 0), "=tax_amount*2"));
+        sheet.set_cell(Cell::formula(Coord::new(1, 0), "=2+3").with_name("tax_amount"));
+        CalcEngine::recalculate_sheet(&mut sheet, None).unwrap();
+        assert!(matches!(sheet.get_cell(Coord::new(0, 0)).unwrap().value, CellValue::Formula { cached_num: Some(10.0), .. }));
+
+        let mut cycle = Sheet::new("main", "Main");
+        cycle.set_cell(Cell::formula(Coord::new(0, 0), "=beta").with_name("alpha"));
+        cycle.set_cell(Cell::formula(Coord::new(1, 0), "=alpha").with_name("beta"));
+        CalcEngine::recalculate_sheet(&mut cycle, None).unwrap();
+        for coord in [Coord::new(0, 0), Coord::new(1, 0)] {
+            assert!(matches!(&cycle.get_cell(coord).unwrap().value, CellValue::Formula { cached_text: Some(v), .. } if v == "#CYCLE!"));
+        }
+    }
+
+    #[test]
+    fn coordinate_like_names_are_parsed_as_cell_refs() {
+        assert_eq!(Coord::parse_a1("q3").unwrap(), Coord::new(16, 2));
+    }
 }

@@ -19,6 +19,7 @@ pub enum ParseError {
     InvalidHistory(String),
     InvalidCoordinate(String),
     InvalidNumber(String),
+    InvalidFormulaCache(String),
     BlobOverflow { expected: usize, available: usize },
 }
 
@@ -27,6 +28,7 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
     let mut workbook = Workbook::new("wb", "Lotus Workbook");
     let mut current_sheet: Option<Sheet> = None;
     let mut current_layer: Option<(String, u32, Vec<(Coord, Option<Cell>)>)> = None;
+    let mut open_history_containers = 0usize;
 
     while !scanner.is_eof() {
         scanner.skip_whitespace_and_comments();
@@ -72,7 +74,12 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
                     // Container tag, scanner will process child document tags
                 }
                 "history" => {
-                    // Container tag, child layers are parsed below.
+                    if tag.is_closing {
+                        open_history_containers = open_history_containers.checked_sub(1)
+                            .ok_or_else(|| ParseError::InvalidHistory("Closing history without an open history block".into()))?;
+                    } else if !tag.is_self_closing {
+                        open_history_containers += 1;
+                    }
                 }
                 "layer" => {
                     if tag.is_closing {
@@ -122,13 +129,20 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
                         let id = tag.get_attr_unescaped("id").unwrap_or_else(|| "doc".to_string());
                         let title = tag.get_attr_unescaped("title").unwrap_or_else(|| "Document".to_string());
                         let doc_type = tag.get_attr_unescaped("type").unwrap_or_else(|| "text/markdown".to_string());
-                        let inner_bytes = scanner.consume_until_closing_tag("document")?;
-                        let mut s = core::str::from_utf8(inner_bytes).unwrap_or("").trim();
-                        if s.starts_with("<![CDATA[") && s.ends_with("]]>") {
-                            s = &s[9..s.len() - 3];
-                            s = s.trim();
-                        }
-                        let mut doc = crate::doc::Document::new(id, title, s);
+                        let body = if let Some(len) = tag.get_attr("bytes").and_then(|value| value.parse::<usize>().ok()) {
+                            let bytes = scanner.consume_exact_bytes(len)?;
+                            scanner.expect_closing_tag("document")?;
+                            core::str::from_utf8(bytes).unwrap_or("").to_string()
+                        } else {
+                            let inner_bytes = scanner.consume_until_closing_tag("document")?;
+                            let mut s = core::str::from_utf8(inner_bytes).unwrap_or("").trim();
+                            if s.starts_with("<![CDATA[") && s.ends_with("]]>") {
+                                s = &s[9..s.len() - 3];
+                                s = s.trim();
+                            }
+                            s.to_string()
+                        };
+                        let mut doc = crate::doc::Document::new(id, title, body);
                         doc.content_type = doc_type.to_string();
                         workbook.documents.push(doc);
                     }
@@ -164,35 +178,48 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
                                     }
                                 }
                                 "basic" => {
-                                    let inner_bytes = scanner.consume_until_closing_tag("cell")?;
-                                    let mut s = core::str::from_utf8(inner_bytes)
-                                        .unwrap_or("")
-                                        .trim();
-                                    if s.starts_with("<![CDATA[") && s.ends_with("]]>") {
-                                        s = &s[9..s.len() - 3];
-                                        s = s.trim();
-                                    }
-                                    CellValue::Basic {
-                                        source: s.to_string(),
-                                    }
+                                    let source = if let Some(len) = tag.get_attr("bytes").and_then(|value| value.parse::<usize>().ok()) {
+                                        let bytes = scanner.consume_exact_bytes(len)?;
+                                        scanner.expect_closing_tag("cell")?;
+                                        core::str::from_utf8(bytes).unwrap_or("").to_string()
+                                    } else {
+                                        let inner_bytes = scanner.consume_until_closing_tag("cell")?;
+                                        let mut s = core::str::from_utf8(inner_bytes).unwrap_or("").trim();
+                                        if s.starts_with("<![CDATA[") && s.ends_with("]]>") {
+                                            s = &s[9..s.len() - 3];
+                                            s = s.trim();
+                                        }
+                                        s.to_string()
+                                    };
+                                    CellValue::Basic { source }
                                 }
                                 "formula" => {
                                     let expr = tag.get_attr_unescaped("formula").unwrap_or_default();
                                     let inner_bytes = scanner.consume_until_closing_tag("cell")?;
-                                    let inner_str = core::str::from_utf8(inner_bytes)
-                                        .unwrap_or("")
-                                        .trim();
-                                    let cached_num = inner_str.parse::<f64>().ok();
-                                    let cached_text = if cached_num.is_none() && !inner_str.is_empty() {
-                                        Some(unescape_xml(inner_str))
-                                    } else {
-                                        None
+                                    let inner_str = core::str::from_utf8(inner_bytes).unwrap_or("");
+                                    let cached_type = tag.get_attr("cachedType");
+                                    let (cached_num, cached_text, cached_bool) = match cached_type {
+                                        Some("number") => {
+                                            let value = inner_str.trim().parse::<f64>()
+                                                .map_err(|_| ParseError::InvalidNumber(inner_str.trim().to_string()))?;
+                                            (Some(value), None, None)
+                                        }
+                                        Some("boolean") => (None, None, Some(inner_str.trim().eq_ignore_ascii_case("true"))),
+                                        Some("text") => (None, Some(unescape_xml(inner_str)), None),
+                                        Some("empty") | None => {
+                                            let legacy = inner_str.trim();
+                                            let number = legacy.parse::<f64>().ok();
+                                            let text = if number.is_none() && !legacy.is_empty() { Some(unescape_xml(legacy)) } else { None };
+                                            (number, text, None)
+                                        }
+                                        Some(other) => return Err(ParseError::InvalidFormulaCache(other.to_string())),
                                     };
 
                                     CellValue::Formula {
                                         expr,
                                         cached_num,
                                         cached_text,
+                                        cached_bool,
                                     }
                                 }
                                 "number" => {
@@ -234,6 +261,19 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
                         let mut cell = Cell::new(coord, value);
                         cell.id = cell_id;
                         cell.name = cell_name;
+                        cell.document_refs = tag.get_attr_unescaped("documentRefs")
+                            .unwrap_or_default()
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|target| !target.is_empty())
+                            .map(ToString::to_string)
+                            .collect();
+                        if matches!(&cell.value, CellValue::Basic { .. }) {
+                            cell.basic_reads = tag.get_attr_unescaped("reads").unwrap_or_default()
+                                .split(',').map(str::trim).filter(|name| !name.is_empty()).map(ToString::to_string).collect();
+                            cell.basic_writes = tag.get_attr_unescaped("writes").unwrap_or_default()
+                                .split(',').map(str::trim).filter(|name| !name.is_empty()).map(ToString::to_string).collect();
+                        }
 
                         if let Some((_, _, changes)) = current_layer.as_mut() {
                             changes.push((coord, Some(cell)));
@@ -254,7 +294,7 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
         }
     }
 
-    if current_layer.is_some() {
+    if current_layer.is_some() || open_history_containers != 0 {
         return Err(ParseError::UnexpectedEof);
     }
     if let Some(sheet) = current_sheet.take() {

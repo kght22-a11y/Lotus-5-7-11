@@ -15,6 +15,7 @@ pub enum CellValue {
         expr: String,
         cached_num: Option<f64>,
         cached_text: Option<String>,
+        cached_bool: Option<bool>,
     },
     Basic {
         source: String,
@@ -51,6 +52,11 @@ pub struct Cell {
     pub coord: Coord,
     pub id: Option<String>,
     pub name: Option<String>,
+    /// Explicit workbook-cell access granted to this embedded BASIC procedure.
+    pub basic_reads: Vec<String>,
+    pub basic_writes: Vec<String>,
+    /// Explicit links to embedded documents, optionally with a `#section` fragment.
+    pub document_refs: Vec<String>,
     pub value: CellValue,
 }
 
@@ -60,6 +66,9 @@ impl Cell {
             coord,
             id: None,
             name: None,
+            basic_reads: Vec::new(),
+            basic_writes: Vec::new(),
+            document_refs: Vec::new(),
             value,
         }
     }
@@ -71,6 +80,17 @@ impl Cell {
 
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    pub fn with_basic_grants(mut self, reads: Vec<String>, writes: Vec<String>) -> Self {
+        self.basic_reads = reads;
+        self.basic_writes = writes;
+        self
+    }
+
+    pub fn with_document_refs(mut self, document_refs: Vec<String>) -> Self {
+        self.document_refs = document_refs;
         self
     }
 
@@ -93,6 +113,7 @@ impl Cell {
                 expr: expr.into(),
                 cached_num: None,
                 cached_text: None,
+                cached_bool: None,
             },
         )
     }

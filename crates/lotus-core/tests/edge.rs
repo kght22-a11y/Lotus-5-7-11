@@ -12,36 +12,19 @@ fn sheet_with(cells: Vec<Cell>) -> Workbook {
 }
 
 fn report(label: &str, original: &Workbook) {
-    match rt(original) {
-        Err(e) => println!("[FAIL-PARSE] {label}: {e}"),
-        Ok(back) if &back == original => println!("[ok]         {label}"),
-        Ok(back) => {
-            println!("[MISMATCH]   {label}");
-            if let (Some(a), Some(b)) = (original.primary_sheet(), back.primary_sheet()) {
-                for (k, c) in &a.cells {
-                    match b.cells.get(k) {
-                        Some(c2) if c2 == c => {}
-                        Some(c2) => println!("    {:?}\n      wrote: {:?}\n      read : {:?}", k, c.value, c2.value),
-                        None => println!("    {:?} lost: {:?}", k, c.value),
-                    }
-                }
-            }
-            if original.documents != back.documents {
-                println!("    documents differ:\n      wrote: {:?}\n      read : {:?}", original.documents, back.documents);
-            }
-        }
-    }
+    let back = rt(original).unwrap_or_else(|e| panic!("{label}: round trip parse failed: {e}"));
+    assert_eq!(&back, original, "round trip mismatch: {label}");
 }
 
 #[test]
 fn edge_cases() {
     let c = |col, row| Coord::new(col, row);
 
-    report("BASIC source containing ]]>",
-        &sheet_with(vec![Cell::basic(c(0,0), "s.bas", "SUB A()\n  LET x = \"]]>\"\nEND SUB")]));
+    report("BASIC source containing closing tags",
+        &sheet_with(vec![Cell::basic(c(0,0), "s.bas", "SUB A()\n  LET x = \"</cell>\"\nEND SUB")]));
 
-    let doc_wb = Workbook::new("t","t").with_document(Document::new("d","d","before ]]> after"));
-    report("Document body containing ]]>", &doc_wb);
+    let doc_wb = Workbook::new("t","t").with_document(Document::new("d","d","before </document> after"));
+    report("Document body containing closing tag", &doc_wb);
 
     report("Text with leading/trailing space",   &sheet_with(vec![Cell::text(c(0,0), "  padded  ")]));
     report("Text with newlines",                  &sheet_with(vec![Cell::text(c(0,0), "line1\nline2\n")]));
@@ -89,6 +72,8 @@ fn edge_cases() {
 fn literal_entities_in_text_and_names() {
     let c = |col, row| Coord::new(col, row);
     report("Text that is literally '&lt;'", &sheet_with(vec![Cell::text(c(0,0), "&lt;b&gt; &quot;x&quot; &amp;amp;")]));
-    report("Cached formula text with & <", &sheet_with(vec![Cell::new(c(0,0), CellValue::Formula{expr:"=A2".into(), cached_num:None, cached_text:Some("R&D <5".into())})]));
+    report("Cached formula text with & <", &sheet_with(vec![Cell::new(c(0,0), CellValue::Formula{expr:"=A2".into(), cached_num:None, cached_text:Some("R&D <5".into()), cached_bool:None})]));
+    report("Numeric-looking cached formula text", &sheet_with(vec![Cell::new(c(0,0), CellValue::Formula{expr:"=\"123\"".into(), cached_num:None, cached_text:Some("123".into()), cached_bool:None})]));
+    report("Whitespace cached formula text", &sheet_with(vec![Cell::new(c(0,0), CellValue::Formula{expr:"=\" x \"".into(), cached_num:None, cached_text:Some("  x  ".into()), cached_bool:None})]));
     report("Workbook title with quote & amp", &{ let mut w = sheet_with(vec![]); w.title = "Q&A \"2026\"".into(); w });
 }

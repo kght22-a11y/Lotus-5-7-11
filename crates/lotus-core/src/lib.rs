@@ -21,7 +21,10 @@ pub mod view;
 
 pub use basic::{BasicError, BasicRunner};
 pub use calc::CalcEngine;
-pub use doc::Document;
+pub use doc::{
+    heading_to_slug, BrokenDocCellRef, BrokenDocRef, BrokenSectionRef, DanglingFormulaRef,
+    Document, DocumentRefStatus, OrphanReport, SectionHeading,
+};
 pub use history::HistoryEngine;
 pub use memory::{BumpArena, MemoryError, MemoryRegion};
 pub use model::{Cell, CellValue, Coord, Sheet, TableOfContents, TocEntry, Workbook};

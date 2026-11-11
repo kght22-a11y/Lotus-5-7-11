@@ -17,6 +17,7 @@ pub enum MenuAction {
     RecalculateAll,
     TOCJump,
     Quit,
+    OrphanCheck,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +208,7 @@ pub fn default_lotus_menu() -> Vec<MenuItem> {
         MenuItem::new('W', "Worksheet", "Global spreadsheet settings and actions", MenuAction::None)
             .with_submenus(vec![
                 MenuItem::new('R', "Recalculate", "Recalculate all formulas across sheets", MenuAction::RecalculateAll),
+                MenuItem::new('O', "Orphans", "Audit workbook for broken document links and dangling formulas", MenuAction::OrphanCheck),
             ]),
         MenuItem::new('F', "File", "Disk operations and workbook persistence", MenuAction::None)
             .with_submenus(vec![
@@ -253,6 +255,14 @@ mod tests {
         // Type 'S' (Save action) -> should trigger FileSave action and close menu
         let save_action = menu.handle_key(Some('S'), false, false, false, false);
         assert_eq!(save_action, MenuAction::FileSave);
+        assert!(!menu.is_active);
+
+        // Test /WO (Worksheet -> Orphans)
+        menu.open();
+        let action = menu.handle_key(Some('W'), false, false, false, false);
+        assert_eq!(action, MenuAction::None);
+        let orphan_action = menu.handle_key(Some('O'), false, false, false, false);
+        assert_eq!(orphan_action, MenuAction::OrphanCheck);
         assert!(!menu.is_active);
     }
 

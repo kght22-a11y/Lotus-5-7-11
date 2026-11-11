@@ -179,9 +179,11 @@ fn cell_display_string(val: &CellValue) -> String {
         CellValue::Number(n) => format!("{:.2}", n),
         CellValue::Text(t) => t.clone(),
         CellValue::Boolean(b) => (if *b { "TRUE" } else { "FALSE" }).into(),
-        CellValue::Formula { cached_num, cached_text, expr } => {
+        CellValue::Formula { cached_num, cached_text, cached_bool, expr } => {
             if let Some(n) = cached_num {
                 format!("{:.2}", n)
+            } else if let Some(value) = cached_bool {
+                (if *value { "TRUE" } else { "FALSE" }).into()
             } else if let Some(ref t) = cached_text {
                 t.clone()
             } else {

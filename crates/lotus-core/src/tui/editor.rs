@@ -14,6 +14,36 @@ pub struct WorkspaceSession {
     pub edit_buffer: Option<String>,
     pub menu: MenuState,
     pub status_message: String,
+    pub is_dirty: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkspaceSession;
+    use crate::model::{Sheet, Workbook};
+
+    #[test]
+    fn dirty_workspace_marks_sheet_title() {
+        let sheet = Sheet::new("main", "Main");
+        let toc = Workbook::new("w", "w").with_sheet(sheet.clone()).compute_toc();
+        let mut session = WorkspaceSession::new();
+        session.is_dirty = true;
+        assert!(session.render_workspace(&sheet, &toc).starts_with("Main* |"));
+    }
+
+    #[test]
+    fn edit_buffer_is_visible_on_the_control_panel_edit_line() {
+        let sheet = Sheet::new("main", "Main");
+        let toc = Workbook::new("w", "w")
+            .with_sheet(sheet.clone())
+            .compute_toc();
+        let mut session = WorkspaceSession::new();
+        session.edit_buffer = Some("100".into());
+        let rendered = session.render_workspace(&sheet, &toc);
+        let mut lines = rendered.lines();
+        assert!(lines.next().unwrap().starts_with("Main | A1"));
+        assert_eq!(lines.next(), Some("EDIT: 100 | Enter commits, Esc cancels"));
+    }
 }
 
 impl WorkspaceSession {
@@ -23,6 +53,7 @@ impl WorkspaceSession {
             edit_buffer: None,
             menu: MenuState::new(),
             status_message: "READY (Press '/' for Lotus Menu, Enter to edit cell)".into(),
+            is_dirty: false,
         }
     }
 
@@ -72,6 +103,7 @@ impl WorkspaceSession {
                         expr: text.into(),
                         cached_num: None,
                         cached_text: None,
+                        cached_bool: None,
                     }
                 } else if let Ok(n) = text.parse::<f64>() {
                     CellValue::Number(n)
@@ -117,8 +149,10 @@ impl WorkspaceSession {
             Some(cell) => {
                 let name = cell.name.as_deref().map(|n| format!(" ({})", n)).unwrap_or_default();
                 let desc = match &cell.value {
-                    CellValue::Formula { expr, cached_num, cached_text } => {
-                        let cached = cached_num.map(|n| format!("{:.2}", n)).or_else(|| cached_text.clone()).unwrap_or_else(|| "<pending>".into());
+                    CellValue::Formula { expr, cached_num, cached_text, cached_bool } => {
+                        let cached = cached_num.map(|n| format!("{:.2}", n))
+                            .or_else(|| cached_bool.map(|value| if value { "TRUE".into() } else { "FALSE".into() }))
+                            .or_else(|| cached_text.clone()).unwrap_or_else(|| "<pending>".into());
                         format!("Formula: {} => {}", expr, cached)
                     }
                     CellValue::Number(n) => format!("Number: {:.2}", n),
@@ -129,20 +163,28 @@ impl WorkspaceSession {
                     CellValue::Empty => "Empty".into(),
                     CellValue::Error(e) => format!("Error: {}", e),
                 };
-                format!("{}{}", desc, name)
+                let links = if !cell.document_refs.is_empty() {
+                    format!(" [Links: {}]", cell.document_refs.join(", "))
+                } else {
+                    String::new()
+                };
+                format!("{}{}{}", desc, name, links)
             }
             None => "Empty".into(),
         };
 
-        screen.push_str(&format!("{} | {:<6} {}\n", sheet.name, self.cursor.to_a1(), cell_info));
+        screen.push_str(&format!("{}{} | {:<6} {}\n", sheet.name, if self.is_dirty { "*" } else { "" }, self.cursor.to_a1(), cell_info));
 
         // Line 2 & Line 3: Menu Bar or Edit Buffer
         if self.menu.is_active {
             let (l1, l2) = self.menu.render_lines();
             screen.push_str(&format!("MENU: {}\n", l1));
             screen.push_str(&format!("      {}\n", l2));
-        } else if let Some(ref buf) = self.edit_buffer {
-            screen.push_str(&format!("EDIT: {}\n\n", buf));
+        } else if self.edit_buffer.is_some() {
+            screen.push_str(&format!(
+                "EDIT: {} | Enter commits, Esc cancels\n\n",
+                self.edit_buffer.as_deref().unwrap_or_default()
+            ));
         } else {
             screen.push_str(&format!("STATUS: {}\n\n", self.status_message));
         }

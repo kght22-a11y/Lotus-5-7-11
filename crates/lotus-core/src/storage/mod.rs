@@ -112,11 +112,14 @@ mod tests {
 
         let mut wb = Workbook::new("doc-wb", "Document Workspace");
         let mut sheet = Sheet::new("main", "Main");
-        sheet.set_cell(Cell::number(Coord::new(0, 0), 42.0).with_name("answer"));
+        sheet.set_cell(Cell::number(Coord::new(0, 0), 42.0)
+            .with_name("answer")
+            .with_document_refs(vec!["analysis-01#summary".into()]));
         wb.sheets.push(sheet);
 
         let doc_body = "# Analysis\nThe calculated answer is {{cell:answer}}.";
         wb = wb.with_document(Document::new("analysis-01", "Analysis Report", doc_body));
+        wb.record_history_layer("main", vec![(Coord::new(0, 0), Some(Cell::number(Coord::new(0, 0), 44.0).with_name("answer")))]).unwrap();
 
         let serialized = serialize_workbook(&wb);
         let restored = deserialize_workbook(&serialized).expect("Deserialization failed");
@@ -126,6 +129,11 @@ mod tests {
         assert_eq!(doc.id, "analysis-01");
         assert_eq!(doc.title, "Analysis Report");
         assert_eq!(doc.body, doc_body);
+        assert_eq!(restored.primary_sheet().unwrap().get_cell(Coord::new(0, 0)).unwrap().document_refs, vec!["analysis-01#summary"]);
+        assert_eq!(restored.documents_linked_from_cell("main", Coord::new(0, 0)).iter().map(|doc| doc.id.as_str()).collect::<Vec<_>>(), vec!["analysis-01"]);
+        assert_eq!(restored.documents_referencing_cell("main", Coord::new(0, 0)).iter().map(|doc| doc.id.as_str()).collect::<Vec<_>>(), vec!["analysis-01"]);
+        assert!(restored.documents_linked_from_cell_at_z("main", Coord::new(0, 0), 1).is_empty());
+        assert_eq!(restored.documents_referencing_cell_at_z("main", Coord::new(0, 0), 1).len(), 1);
 
         // Test live rendering
         let rendered = doc.render_live(&restored.sheets[0], Some(&restored));
@@ -144,7 +152,8 @@ mod tests {
         let mut wb = Workbook::new("history-wb", "History Workspace").with_sheet(sheet);
 
         let z1 = wb.record_history_layer("main", vec![
-            (Coord::new(0, 0), Some(Cell::number(Coord::new(0, 0), 900.0))),
+            (Coord::new(0, 0), Some(Cell::number(Coord::new(0, 0), 900.0)
+                .with_document_refs(vec!["analysis#results".into()]))),
             (Coord::new(1, 0), None),
             (Coord::new(2, 0), Some(Cell::blob(Coord::new(2, 0), "payload", b"x</cell>\0\xff".to_vec()))),
         ]).unwrap();
@@ -163,6 +172,7 @@ mod tests {
 
         let at_z1 = restored.sheet_at_z("main", 1).unwrap();
         assert_eq!(at_z1.get_cell(Coord::new(0, 0)).unwrap().value, CellValue::Number(900.0));
+        assert_eq!(at_z1.get_cell(Coord::new(0, 0)).unwrap().document_refs, vec!["analysis#results"]);
         assert!(at_z1.get_cell(Coord::new(1, 0)).is_none());
         assert_eq!(at_z1.get_cell(Coord::new(2, 0)).unwrap().value, CellValue::Blob { bytes: b"x</cell>\0\xff".to_vec() });
 
@@ -175,5 +185,58 @@ mod tests {
     fn test_invalid_z_layer_order_is_rejected() {
         let workbook = b"<workbook id=\"w\" title=\"w\"><sheet id=\"main\" name=\"Main\"></sheet><history><layer sheet=\"main\" z=\"2\"><cell ref=\"A1\" type=\"number\">1</cell></layer></history></workbook>";
         assert!(matches!(deserialize_workbook(workbook), Err(ParseError::InvalidHistory(_))));
+    }
+
+    #[test]
+    fn appended_history_trailer_accepts_a_batch_of_consecutive_layers() {
+        let sheet = Sheet::new("main", "Main");
+        let base = Workbook::new("batch-wb", "Batch Updates").with_sheet(sheet);
+        let mut bytes = serialize_workbook(&base);
+        bytes.extend_from_slice(b"\n<history>\n");
+        for z in 1..=12 {
+            bytes.extend_from_slice(
+                format!(
+                    "  <layer sheet=\"main\" z=\"{}\"><cell ref=\"A1\" type=\"number\">{}</cell></layer>\n",
+                    z, z
+                )
+                .as_bytes(),
+            );
+        }
+        bytes.extend_from_slice(b"</history>\n<cursor sheet=\"main\" x=\"0\" y=\"0\" z=\"12\" />\n");
+
+        let restored = deserialize_workbook(&bytes).expect("Appended update batch should parse");
+        assert_eq!(restored.history_for_sheet("main").unwrap().max_z, 12);
+        assert_eq!(restored.get_sheet("main").unwrap().cells.len(), 0);
+        assert_eq!(
+            restored.sheet_at_z("main", 12).unwrap().get_cell(Coord::new(0, 0)).unwrap().value,
+            CellValue::Number(12.0)
+        );
+    }
+
+    #[test]
+    fn incomplete_appended_history_batch_is_rejected() {
+        let base = Workbook::new("batch-wb", "Batch Updates").with_sheet(Sheet::new("main", "Main"));
+        let mut bytes = serialize_workbook(&base);
+        bytes.extend_from_slice(b"\n<history><layer sheet=\"main\" z=\"1\"><cell ref=\"A1\" type=\"number\">42</cell></layer>");
+        assert!(matches!(deserialize_workbook(&bytes), Err(ParseError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn formula_boolean_cache_and_basic_grants_roundtrip() {
+        let mut sheet = Sheet::new("main", "Main");
+        sheet.set_cell(Cell::number(Coord::new(0, 0), 3.0));
+        sheet.set_cell(Cell::formula(Coord::new(1, 0), "=A1>5"));
+        sheet.set_cell(Cell::formula(Coord::new(2, 0), "=IF(B1,\"big\",\"small\")"));
+        sheet.set_cell(Cell::basic(Coord::new(0, 1), "script", "LET x = 1")
+            .with_basic_grants(vec!["A1".into(), "tax_rate".into()], vec!["B2".into()]));
+        crate::calc::CalcEngine::recalculate_sheet(&mut sheet, None).unwrap();
+        let wb = Workbook::new("w", "w").with_sheet(sheet);
+        let restored = deserialize_workbook(&serialize_workbook(&wb)).unwrap();
+        let restored_sheet = restored.primary_sheet().unwrap();
+        assert!(matches!(restored_sheet.get_cell(Coord::new(1, 0)).unwrap().value, CellValue::Formula { cached_bool: Some(false), .. }));
+        assert!(matches!(&restored_sheet.get_cell(Coord::new(2, 0)).unwrap().value, CellValue::Formula { cached_text: Some(v), .. } if v == "small"));
+        let basic = restored_sheet.get_cell(Coord::new(0, 1)).unwrap();
+        assert_eq!(basic.basic_reads, vec!["A1", "tax_rate"]);
+        assert_eq!(basic.basic_writes, vec!["B2"]);
     }
 }

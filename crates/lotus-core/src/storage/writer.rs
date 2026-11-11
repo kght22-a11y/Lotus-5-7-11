@@ -69,14 +69,15 @@ pub fn serialize_workbook(wb: &Workbook) -> Vec<u8> {
         out.extend_from_slice(b"\n  <documents>\n");
         for doc in &wb.documents {
             let doc_header = format!(
-                "    <document id=\"{}\" title=\"{}\" type=\"{}\">\n<![CDATA[\n",
+                "    <document id=\"{}\" title=\"{}\" type=\"{}\" bytes=\"{}\">",
                 escape_attr(&doc.id),
                 escape_attr(&doc.title),
-                escape_attr(&doc.content_type)
+                escape_attr(&doc.content_type),
+                doc.body.as_bytes().len()
             );
             out.extend_from_slice(doc_header.as_bytes());
             out.extend_from_slice(doc.body.as_bytes());
-            out.extend_from_slice(b"\n]]>\n    </document>\n");
+            out.extend_from_slice(b"</document>\n");
         }
         out.extend_from_slice(b"  </documents>\n");
     }
@@ -120,6 +121,12 @@ fn write_cell(out: &mut Vec<u8>, cell: &Cell) {
     if let Some(ref name) = cell.name {
         attrs.push_str(&format!(" name=\"{}\"", escape_attr(name)));
     }
+    if !cell.document_refs.is_empty() {
+        attrs.push_str(&format!(
+            " documentRefs=\"{}\"",
+            escape_attr(&cell.document_refs.join(","))
+        ));
+    }
 
     match &cell.value {
         CellValue::Empty => {
@@ -146,27 +153,45 @@ fn write_cell(out: &mut Vec<u8>, cell: &Cell) {
             expr,
             cached_num,
             cached_text,
+            cached_bool,
         } => {
             let mut val_str = String::new();
+            let mut cached_type = String::new();
             if let Some(n) = cached_num {
                 val_str = format!("{}", n);
+                cached_type = "number".into();
+            } else if let Some(value) = cached_bool {
+                val_str = value.to_string();
+                cached_type = "boolean".into();
             } else if let Some(ref t) = cached_text {
                 val_str = escape_xml_text(t);
+                cached_type = "text".into();
             }
 
+            let cache_attr = if cached_type.is_empty() { String::new() } else {
+                format!(" cachedType=\"{}\"", cached_type)
+            };
+
             let line = format!(
-                "    <cell{} type=\"formula\" formula=\"{}\">{}</cell>\n",
+                "    <cell{} type=\"formula\" formula=\"{}\"{}>{}</cell>\n",
                 attrs,
                 escape_attr(expr),
+                cache_attr,
                 val_str
             );
             out.extend_from_slice(line.as_bytes());
         }
         CellValue::Basic { source } => {
-            let open = format!("    <cell{} type=\"basic\">\n<![CDATA[\n", attrs);
+            if !cell.basic_reads.is_empty() {
+                attrs.push_str(&format!(" reads=\"{}\"", escape_attr(&cell.basic_reads.join(","))));
+            }
+            if !cell.basic_writes.is_empty() {
+                attrs.push_str(&format!(" writes=\"{}\"", escape_attr(&cell.basic_writes.join(","))));
+            }
+            let open = format!("    <cell{} type=\"basic\" bytes=\"{}\">", attrs, source.as_bytes().len());
             out.extend_from_slice(open.as_bytes());
             out.extend_from_slice(source.as_bytes());
-            out.extend_from_slice(b"\n]]>\n    </cell>\n");
+            out.extend_from_slice(b"</cell>\n");
         }
         CellValue::Blob { bytes } => {
             let open = format!(

@@ -21,6 +21,27 @@ The base worksheet is Z=0. A top-level `<history>` element stores per-sheet delt
 </history>
 ```
 
+### Appended update batches
+
+An AI can submit a batch by appending a second `<history>` block after the workbook’s closing `</workbook>` tag. The block can contain one layer or many consecutive layers; the reader validates the complete batch before the viewer accepts it. For example, the AI can append twelve `<layer>` blocks in one post. The file reader scans Lotus tags as a stream, so this append trailer is part of the `.lotus` format even though the combined file is not a single-root XML document.
+
+```xml
+</workbook>
+<history>
+  <layer sheet="main" z="4">
+    <cell ref="A1" type="number">9000</cell>
+  </layer>
+  <layer sheet="main" z="5">
+    <cell ref="B1" type="text">Review this change</cell>
+  </layer>
+</history>
+<cursor sheet="main" x="0" y="0" z="5" />
+```
+
+The cursor line is reserved for a future AI focus marker: a workbook sheet and X, Y, Z location where the UI should direct attention and begin following links. The current viewer ignores this tag; cursor navigation and link following are deferred.
+
+The UI polls the file every 30 seconds. After the user saves an update, it polls every 10 seconds for one minute, then returns to the 30-second interval. It hashes each read and parses only when the file changes. New history layers are imported without rewriting the base sheet. Concurrent batches are placed after already present local layers. A changed base workbook or malformed/incomplete batch is held back; Ctrl-S is blocked until the file is corrected or explicitly reloaded.
+
 Cell types, formulas, BASIC source, and raw blob payloads use the same serialization rules as base-sheet cells.
 
 ## Validation and behavior

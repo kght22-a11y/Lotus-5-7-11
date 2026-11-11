@@ -29,7 +29,7 @@ impl CalcEngine {
             if let CellValue::Formula { expr, .. } = &cell.value {
                 if let Ok(ast) = Parser::parse_str(expr) {
                     let mut deps = BTreeSet::new();
-                    collect_dependencies(&ast, &mut deps);
+                    collect_dependencies(&ast, &mut deps, sheet);
                     parsed_formulas.insert(cell.coord, (ast, deps));
                 }
             }
@@ -87,9 +87,10 @@ impl CalcEngine {
         // Mark cycle cells with #CYCLE!
         for coord in &cycle_cells {
             if let Some(cell) = sheet.cells.get_mut(coord) {
-                if let CellValue::Formula { ref mut cached_num, ref mut cached_text, .. } = cell.value {
+                if let CellValue::Formula { ref mut cached_num, ref mut cached_text, ref mut cached_bool, .. } = cell.value {
                     *cached_num = None;
                     *cached_text = Some("#CYCLE!".into());
+                    *cached_bool = None;
                 }
             }
         }
@@ -102,27 +103,32 @@ impl CalcEngine {
                 let result = eval.eval(ast);
 
                 if let Some(cell) = sheet.cells.get_mut(&coord) {
-                    if let CellValue::Formula { ref mut cached_num, ref mut cached_text, .. } = cell.value {
+                    if let CellValue::Formula { ref mut cached_num, ref mut cached_text, ref mut cached_bool, .. } = cell.value {
                         match result {
                             EvalValue::Number(n) => {
                                 *cached_num = Some(n);
                                 *cached_text = None;
+                                *cached_bool = None;
                             }
                             EvalValue::Text(t) => {
                                 *cached_num = None;
                                 *cached_text = Some(t);
+                                *cached_bool = None;
                             }
                             EvalValue::Boolean(b) => {
                                 *cached_num = None;
-                                *cached_text = Some(if b { "TRUE".into() } else { "FALSE".into() });
+                                *cached_text = None;
+                                *cached_bool = Some(b);
                             }
                             EvalValue::Empty => {
                                 *cached_num = None;
                                 *cached_text = None;
+                                *cached_bool = None;
                             }
                             EvalValue::Error(e) => {
                                 *cached_num = None;
                                 *cached_text = Some(e);
+                                *cached_bool = None;
                             }
                         }
                     }
@@ -148,7 +154,7 @@ impl CalcEngine {
     }
 }
 
-fn collect_dependencies(expr: &Expr, deps: &mut BTreeSet<Coord>) {
+fn collect_dependencies(expr: &Expr, deps: &mut BTreeSet<Coord>, sheet: &Sheet) {
     match expr {
         Expr::CellRef(c) => {
             deps.insert(*c);
@@ -160,14 +166,19 @@ fn collect_dependencies(expr: &Expr, deps: &mut BTreeSet<Coord>) {
                 }
             }
         }
-        Expr::Unary { expr, .. } => collect_dependencies(expr, deps),
+        Expr::NamedRef(name) => {
+            if let Some(cell) = sheet.cells.values().find(|cell| cell.name.as_deref() == Some(name)) {
+                deps.insert(cell.coord);
+            }
+        }
+        Expr::Unary { expr, .. } => collect_dependencies(expr, deps, sheet),
         Expr::Binary { left, right, .. } => {
-            collect_dependencies(left, deps);
-            collect_dependencies(right, deps);
+            collect_dependencies(left, deps, sheet);
+            collect_dependencies(right, deps, sheet);
         }
         Expr::FunctionCall { args, .. } => {
             for arg in args {
-                collect_dependencies(arg, deps);
+                collect_dependencies(arg, deps, sheet);
             }
         }
         _ => {}

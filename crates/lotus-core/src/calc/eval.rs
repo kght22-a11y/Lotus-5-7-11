@@ -99,9 +99,11 @@ impl<'a> Evaluator<'a> {
                 CellValue::Number(n) => EvalValue::Number(*n),
                 CellValue::Text(t) => EvalValue::Text(t.clone()),
                 CellValue::Boolean(b) => EvalValue::Boolean(*b),
-                CellValue::Formula { cached_num, cached_text, .. } => {
+                CellValue::Formula { cached_num, cached_text, cached_bool, .. } => {
                     if let Some(n) = cached_num {
                         EvalValue::Number(*n)
+                    } else if let Some(value) = cached_bool {
+                        EvalValue::Boolean(*value)
                     } else if let Some(t) = cached_text {
                         EvalValue::Text(t.clone())
                     } else {

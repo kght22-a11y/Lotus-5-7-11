@@ -12,6 +12,7 @@ use crate::model::{CellValue, Coord, Sheet};
 pub enum VmError {
     StepBudgetExceeded,
     CellAccessDenied { coord: Coord, operation: CellOperation },
+    WriteToFormulaCell(Coord),
     StackUnderflow,
     TypeMismatch(&'static str),
     DivisionByZero,
@@ -106,6 +107,9 @@ impl<'a> Vm<'a> {
 
                     if !self.writable_cells.contains(&coord) {
                         return Err(VmError::CellAccessDenied { coord, operation: CellOperation::Write });
+                    }
+                    if matches!(self.sheet.get_cell(coord).map(|cell| &cell.value), Some(CellValue::Formula { .. })) {
+                        return Err(VmError::WriteToFormulaCell(coord));
                     }
 
                     // Convert Value to CellValue and stage it
@@ -260,9 +264,11 @@ impl<'a> Vm<'a> {
                 CellValue::Number(n) => Value::Number(*n),
                 CellValue::Text(t) => Value::StringLit(t.clone()),
                 CellValue::Boolean(b) => Value::Boolean(*b),
-                CellValue::Formula { cached_num, cached_text, .. } => {
+                CellValue::Formula { cached_num, cached_text, cached_bool, .. } => {
                     if let Some(n) = cached_num {
                         Value::Number(*n)
+                    } else if let Some(value) = cached_bool {
+                        Value::Boolean(*value)
                     } else if let Some(t) = cached_text {
                         Value::StringLit(t.clone())
                     } else {

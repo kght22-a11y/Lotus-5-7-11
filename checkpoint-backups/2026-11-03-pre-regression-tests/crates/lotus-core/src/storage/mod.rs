@@ -1,0 +1,138 @@
+pub mod reader;
+pub mod writer;
+
+pub use reader::{deserialize_workbook, ParseError};
+pub use writer::serialize_workbook;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Cell, CellValue, Coord, Sheet, Workbook};
+
+    #[test]
+    fn test_full_workbook_roundtrip() {
+        let mut wb = Workbook::new("test-wb", "Lotus Test Workspace");
+        let mut sheet = Sheet::new("main", "Main");
+
+        // Cell A1: Number 100.5
+        sheet.set_cell(Cell::number(Coord::new(0, 0), 100.5).with_name("input_a"));
+
+        // Cell B1: Number 200.0
+        sheet.set_cell(Cell::number(Coord::new(1, 0), 200.0).with_name("input_b"));
+
+        // Cell C1: Formula =A1+B1
+        sheet.set_cell(Cell::formula(Coord::new(2, 0), "=A1+B1").with_name("result_sum"));
+
+        // Cell A2: Embedded BASIC procedure
+        let basic_code = "SUB Calculate()\n  LET a = GET_CELL(\"A1\")\n  SET_CELL(\"B1\", a * 2)\nEND SUB";
+        sheet.set_cell(Cell::basic(Coord::new(0, 1), "sim.bas", basic_code));
+
+        // Cell B2: Named Raw Binary Payload (contains null bytes and high bytes)
+        let binary_payload: Vec<u8> = vec![0x00, 0xFF, 0x55, 0xAA, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01];
+        sheet.set_cell(Cell::blob(Coord::new(1, 1), "kernel.bin", binary_payload.clone()));
+
+        // Cell C26: Furthest cell in extent (Col C is 2, Row 26 is 25)
+        sheet.set_cell(Cell::text(Coord::new(2, 25), "Extent Cell"));
+
+        wb.sheets.push(sheet);
+
+        // 1. Verify dynamic TOC calculation before serialization
+        // Furthest col is 2 (C), furthest row is 25 (26)
+        // TOC must be at col 3 (D), row 26 (27) -> "D27"
+        let toc = wb.compute_toc();
+        assert_eq!(toc.pos, Coord::new(3, 26));
+        assert_eq!(toc.pos.to_a1(), "D27");
+
+        // 2. Serialize to bytes
+        let serialized = serialize_workbook(&wb);
+
+        // Verify that the serialized format contains human-readable XML framing
+        let serialized_str = String::from_utf8_lossy(&serialized);
+        assert!(serialized_str.contains("<workbook id=\"test-wb\""));
+        assert!(serialized_str.contains("<toc ref=\"D27\""));
+        assert!(serialized_str.contains("name=\"sim.bas\""));
+        assert!(serialized_str.contains("name=\"kernel.bin\""));
+        assert!(serialized_str.contains("type=\"blob\" bytes=\"10\""));
+
+        // 3. Deserialize back
+        let restored = deserialize_workbook(&serialized).expect("Deserialization failed");
+
+        assert_eq!(restored.id, "test-wb");
+        assert_eq!(restored.title, "Lotus Test Workspace");
+        assert_eq!(restored.sheets.len(), 1);
+
+        let restored_sheet = &restored.sheets[0];
+        assert_eq!(restored_sheet.cells.len(), 6);
+
+        // Check Number cell
+        let a1 = restored_sheet.get_cell(Coord::new(0, 0)).unwrap();
+        assert_eq!(a1.name.as_deref(), Some("input_a"));
+        assert_eq!(a1.value, CellValue::Number(100.5));
+
+        // Check Formula cell
+        let c1 = restored_sheet.get_cell(Coord::new(2, 0)).unwrap();
+        assert_eq!(c1.name.as_deref(), Some("result_sum"));
+        match &c1.value {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "=A1+B1"),
+            _ => panic!("Expected formula"),
+        }
+
+        // Check BASIC cell
+        let a2 = restored_sheet.get_cell(Coord::new(0, 1)).unwrap();
+        assert_eq!(a2.name.as_deref(), Some("sim.bas"));
+        match &a2.value {
+            CellValue::Basic { source } => assert_eq!(source, basic_code),
+            _ => panic!("Expected basic"),
+        }
+
+        // Check Binary Blob cell (byte-for-byte exactness)
+        let b2 = restored_sheet.get_cell(Coord::new(1, 1)).unwrap();
+        assert_eq!(b2.name.as_deref(), Some("kernel.bin"));
+        match &b2.value {
+            CellValue::Blob { bytes } => assert_eq!(bytes, &binary_payload),
+            _ => panic!("Expected blob"),
+        }
+
+        // 4. Test Cell-as-a-File Ejection
+        let ejected = restored.eject_cell("kernel.bin").expect("Ejection failed");
+        assert_eq!(ejected, binary_payload.as_slice());
+
+        // Test BASIC source ejection
+        let ejected_basic = restored.eject_cell("sim.bas").expect("Eject basic failed");
+        assert_eq!(ejected_basic, basic_code.as_bytes());
+
+        // 5. Test Dynamic TOC on restored workbook
+        let restored_toc = restored.compute_toc();
+        assert_eq!(restored_toc.pos.to_a1(), "D27");
+    }
+
+    #[test]
+    fn test_embedded_document_roundtrip() {
+        use crate::doc::Document;
+
+        let mut wb = Workbook::new("doc-wb", "Document Workspace");
+        let mut sheet = Sheet::new("main", "Main");
+        sheet.set_cell(Cell::number(Coord::new(0, 0), 42.0).with_name("answer"));
+        wb.sheets.push(sheet);
+
+        let doc_body = "# Analysis\nThe calculated answer is {{cell:answer}}.";
+        wb = wb.with_document(Document::new("analysis-01", "Analysis Report", doc_body));
+
+        let serialized = serialize_workbook(&wb);
+        let restored = deserialize_workbook(&serialized).expect("Deserialization failed");
+
+        assert_eq!(restored.documents.len(), 1);
+        let doc = &restored.documents[0];
+        assert_eq!(doc.id, "analysis-01");
+        assert_eq!(doc.title, "Analysis Report");
+        assert_eq!(doc.body, doc_body);
+
+        // Test live rendering
+        let rendered = doc.render_live(&restored.sheets[0], Some(&restored));
+        assert_eq!(rendered, "# Analysis\nThe calculated answer is 42.00.");
+
+        // Test document ejection
+        let ejected = restored.eject_cell("analysis-01").expect("Document ejection failed");
+        assert_eq!(ejected, doc_body.as_bytes());
+    }
+}

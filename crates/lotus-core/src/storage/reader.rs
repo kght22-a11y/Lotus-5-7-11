@@ -67,7 +67,10 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
                     } else {
                         let id = tag.get_attr_unescaped("id").unwrap_or_else(|| "sheet".to_string());
                         let name = tag.get_attr_unescaped("name").unwrap_or_else(|| "Sheet".to_string());
-                        current_sheet = Some(Sheet::new(id, name));
+                        let mut sheet = Sheet::new(id, name);
+                        sheet.default_col_width = tag.get_attr("defColW").and_then(|s| s.parse().ok()).unwrap_or(100.0);
+                        sheet.default_row_height = tag.get_attr("defRowH").and_then(|s| s.parse().ok()).unwrap_or(24.0);
+                        current_sheet = Some(sheet);
                     }
                 }
                 "documents" => {
@@ -123,6 +126,24 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
                     let coord = Coord::parse_a1(coord_str)
                         .ok_or_else(|| ParseError::InvalidCoordinate(coord_str.to_string()))?;
                     changes.push((coord, None));
+                }
+                "col" => {
+                    if tag.is_self_closing {
+                        let index = tag.get_attr("index").and_then(|s| s.parse().ok()).unwrap_or(0);
+                        let width = tag.get_attr("w").and_then(|s| s.parse().ok()).unwrap_or(100.0);
+                        if let Some(ref mut sheet) = current_sheet {
+                            sheet.set_col_width(index, width);
+                        }
+                    }
+                }
+                "row" => {
+                    if tag.is_self_closing {
+                        let index = tag.get_attr("index").and_then(|s| s.parse().ok()).unwrap_or(0);
+                        let height = tag.get_attr("h").and_then(|s| s.parse().ok()).unwrap_or(24.0);
+                        if let Some(ref mut sheet) = current_sheet {
+                            sheet.set_row_height(index, height);
+                        }
+                    }
                 }
                 "document" => {
                     if !tag.is_closing {
@@ -261,6 +282,9 @@ pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {
                         let mut cell = Cell::new(coord, value);
                         cell.id = cell_id;
                         cell.name = cell_name;
+                        cell.col_span = tag.get_attr("colSpan").and_then(|s| s.parse().ok()).unwrap_or(1);
+                        cell.row_span = tag.get_attr("rowSpan").and_then(|s| s.parse().ok()).unwrap_or(1);
+                        cell.overlay = tag.get_attr_unescaped("overlay");
                         cell.document_refs = tag.get_attr_unescaped("documentRefs")
                             .unwrap_or_default()
                             .split(',')

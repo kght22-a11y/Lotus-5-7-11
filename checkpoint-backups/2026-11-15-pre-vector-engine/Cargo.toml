@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/lotus-core",
+    "crates/lotus-cli",
+]
+resolver = "2"

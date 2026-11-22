@@ -19,7 +19,7 @@ pub mod substrate;
 pub mod tui;
 pub mod view;
 
-pub use basic::{BasicError, BasicRunner};
+pub use basic::{BasicError, BasicRunner, Turtle};
 pub use calc::CalcEngine;
 pub use doc::{
     heading_to_slug, BrokenDocCellRef, BrokenDocRef, BrokenSectionRef, DanglingFormulaRef,
@@ -27,8 +27,14 @@ pub use doc::{
 };
 pub use history::HistoryEngine;
 pub use memory::{BumpArena, MemoryError, MemoryRegion};
-pub use model::{Cell, CellValue, Coord, Sheet, TableOfContents, TocEntry, Workbook};
+pub use model::{
+    Cell, CellValue, ColorRgba, Coord, Point2D, Rect2D, Sheet, StrokeStyle, TableOfContents,
+    TocEntry, VectorBuffer, VectorOp, Workbook,
+};
 pub use storage::{deserialize_workbook, serialize_workbook, ParseError};
 pub use substrate::{Partition, SharedMailbox, SubstrateDescriptor};
 pub use tui::{MenuAction, MenuItem, MenuState, WorkspaceSession};
-pub use view::GridRenderer;
+pub use view::{
+    Bitmap, ContextMenu, ContextMenuAction, ContextMenuItem, GridRenderer, HersheyFont,
+    HersheyGlyph, StrokeSegment, SubpixelRasterizer, Transform2D, VectorWorkspaceView,
+};

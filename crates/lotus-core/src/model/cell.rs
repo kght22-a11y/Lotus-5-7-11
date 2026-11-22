@@ -27,6 +27,10 @@ pub enum CellValue {
 }
 
 impl CellValue {
+    pub fn is_empty(&self) -> bool {
+        matches!(self, CellValue::Empty)
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             CellValue::Empty => "empty",
@@ -57,11 +61,20 @@ pub struct Cell {
     pub basic_writes: Vec<String>,
     /// Explicit links to embedded documents, optionally with a `#section` fragment.
     pub document_refs: Vec<String>,
+    /// Flag indicating this cell stores a binary/media/vector asset rather than active spreadsheet grid data.
+    pub is_asset: bool,
+    /// Column span in the logical point grid (default: 1).
+    pub col_span: u32,
+    /// Row span in the logical point grid (default: 1).
+    pub row_span: u32,
+    /// Optional reference to a vector blob cell (curtain overlay projection).
+    pub overlay: Option<String>,
     pub value: CellValue,
 }
 
 impl Cell {
     pub fn new(coord: Coord, value: CellValue) -> Self {
+        let is_asset = coord.row >= 10_000;
         Self {
             coord,
             id: None,
@@ -69,8 +82,32 @@ impl Cell {
             basic_reads: Vec::new(),
             basic_writes: Vec::new(),
             document_refs: Vec::new(),
+            is_asset,
+            col_span: 1,
+            row_span: 1,
+            overlay: None,
             value,
         }
+    }
+
+    pub fn with_span(mut self, col_span: u32, row_span: u32) -> Self {
+        self.col_span = col_span.max(1);
+        self.row_span = row_span.max(1);
+        self
+    }
+
+    pub fn with_overlay(mut self, overlay: impl Into<String>) -> Self {
+        self.overlay = Some(overlay.into());
+        self
+    }
+
+    pub fn with_asset(mut self, is_asset: bool) -> Self {
+        self.is_asset = is_asset;
+        self
+    }
+
+    pub fn is_asset(&self) -> bool {
+        self.is_asset || self.coord.row >= 10_000
     }
 
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
@@ -125,4 +162,6 @@ impl Cell {
     pub fn blob(coord: Coord, name: impl Into<String>, bytes: Vec<u8>) -> Self {
         Self::new(coord, CellValue::Blob { bytes }).with_name(name)
     }
+
+
 }

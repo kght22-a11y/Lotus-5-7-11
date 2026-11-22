@@ -1,6 +1,6 @@
 [package]
 name = "lotus-core"
-version = "0.1.0"
+version = "0.2.5"
 edition = "2021"
 description = "Self-contained OS-agnostic computational spreadsheet engine and storage for Lotus 5-7-11"
 

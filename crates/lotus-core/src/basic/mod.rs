@@ -1,11 +1,13 @@
 pub mod bytecode;
 pub mod compiler;
 pub mod runner;
+pub mod turtle;
 pub mod vm;
 
 pub use bytecode::{Opcode, Value};
 pub use compiler::{CompileError, Compiler};
 pub use runner::{BasicError, BasicRunner};
+pub use turtle::Turtle;
 pub use vm::{CellOperation, Vm, VmError};
 
 #[cfg(test)]
@@ -138,5 +140,69 @@ mod tests {
         let result = BasicRunner::execute(&mut sheet, Coord::new(1, 0), script, &[], &[formula], None);
         assert!(matches!(result, Err(BasicError::Runtime(VmError::WriteToFormulaCell(c))) if c == formula));
         assert!(matches!(sheet.get_cell(formula).unwrap().value, CellValue::Formula { .. }));
+    }
+
+    #[test]
+    fn test_turtle_graphics_script_execution() {
+        let mut sheet = Sheet::new("main", "Main");
+        let owner = Coord::new(0, 0);
+
+        // A script drawing a square and labeling it with Hershey font
+        let script = r#"
+            WIDTH 2
+            COLOR "red"
+            FOR I = 1 TO 4
+                FD 100
+                RT 90
+            NEXT I
+            LABEL "LOGO"
+        "#;
+
+        let (writes, vector_buf) = BasicRunner::execute_with_turtle(&mut sheet, owner, script, &[], &[], None)
+            .expect("Turtle script should execute successfully");
+
+        assert_eq!(writes, 0, "No cells were directly written");
+        assert!(vector_buf.len() > 10, "Vector buffer should contain square lines and label strokes");
+
+        // Verify bounding box of the turtle drawing
+        let bounds = vector_buf.bounds().expect("Bounds should exist");
+        assert!(bounds.width() > 50.0);
+        assert!(bounds.height() > 50.0);
+    }
+
+    #[test]
+    fn test_turtle_commit_to_far_out_asset_blob() {
+        let mut sheet = Sheet::new("main", "Main");
+        let owner = Coord::new(0, 0);
+        let target_asset = Coord::parse_a1("A10000").unwrap();
+
+        // Create empty asset cell or grant write to A10000
+        sheet.set_cell(Cell::blob(target_asset, "logo_blob", vec![]));
+
+        let script = r#"
+            COLOR "cyan"
+            WIDTH 3
+            FD 50
+            RT 90
+            FD 50
+            COMMIT_TURTLE("A10000")
+        "#;
+
+        let writes = BasicRunner::execute(&mut sheet, owner, script, &[], &[target_asset], None)
+            .expect("Should execute and commit turtle blob");
+
+        assert_eq!(writes, 1, "Should have committed 1 cell write to A10000");
+
+        // Verify the cell in A10000 now contains a valid serialized VectorBuffer blob
+        let cell = sheet.get_cell(target_asset).expect("Cell A10000 should exist");
+        match &cell.value {
+            CellValue::Blob { bytes } => {
+                assert!(!bytes.is_empty());
+                let decoded = crate::model::VectorBuffer::from_bytes(bytes)
+                    .expect("Blob should decode as valid vector buffer");
+                assert!(decoded.len() >= 4);
+            }
+            _ => panic!("Expected CellValue::Blob"),
+        }
     }
 }

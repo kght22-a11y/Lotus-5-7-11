@@ -51,11 +51,20 @@ pub fn serialize_workbook(wb: &Workbook) -> Vec<u8> {
     // 3. Sheets and Cells
     for sheet in &wb.sheets {
         let sheet_header = format!(
-            "  <sheet id=\"{}\" name=\"{}\">\n",
+            "  <sheet id=\"{}\" name=\"{}\" defColW=\"{}\" defRowH=\"{}\">\n",
             escape_attr(&sheet.id),
-            escape_attr(&sheet.name)
+            escape_attr(&sheet.name),
+            sheet.default_col_width,
+            sheet.default_row_height
         );
         out.extend_from_slice(sheet_header.as_bytes());
+
+        for (col, width) in &sheet.col_widths {
+            out.extend_from_slice(format!("    <col index=\"{}\" w=\"{}\" />\n", col, width).as_bytes());
+        }
+        for (row, height) in &sheet.row_heights {
+            out.extend_from_slice(format!("    <row index=\"{}\" h=\"{}\" />\n", row, height).as_bytes());
+        }
 
         for cell in sheet.cells.values() {
             write_cell(&mut out, cell);
@@ -126,6 +135,15 @@ fn write_cell(out: &mut Vec<u8>, cell: &Cell) {
             " documentRefs=\"{}\"",
             escape_attr(&cell.document_refs.join(","))
         ));
+    }
+    if cell.col_span != 1 {
+        attrs.push_str(&format!(" colSpan=\"{}\"", cell.col_span));
+    }
+    if cell.row_span != 1 {
+        attrs.push_str(&format!(" rowSpan=\"{}\"", cell.row_span));
+    }
+    if let Some(ref ov) = cell.overlay {
+        attrs.push_str(&format!(" overlay=\"{}\"", escape_attr(ov)));
     }
 
     match &cell.value {

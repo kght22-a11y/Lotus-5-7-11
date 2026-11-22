@@ -1,0 +1,9 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^README\.Rmd$
+^data-raw$
+^working$
+^pkgdown$
+^doc$
+^Meta$
+^\.travis\.yml$

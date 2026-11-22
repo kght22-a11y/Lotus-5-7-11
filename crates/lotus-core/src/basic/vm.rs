@@ -6,7 +6,8 @@ use alloc::{collections::{BTreeMap, BTreeSet}, format, string::String, vec::Vec}
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::bytecode::{Opcode, Value};
-use crate::model::{CellValue, Coord, Sheet};
+use super::turtle::Turtle;
+use crate::model::{CellValue, ColorRgba, Coord, Sheet};
 
 #[derive(Debug, PartialEq)]
 pub enum VmError {
@@ -36,6 +37,7 @@ pub struct Vm<'a> {
     pub staged_writes: BTreeMap<Coord, CellValue>,
     readable_cells: BTreeSet<Coord>,
     writable_cells: BTreeSet<Coord>,
+    pub turtle: Turtle,
 }
 
 impl<'a> Vm<'a> {
@@ -51,6 +53,7 @@ impl<'a> Vm<'a> {
             staged_writes: BTreeMap::new(),
             readable_cells: BTreeSet::new(),
             writable_cells: BTreeSet::new(),
+            turtle: Turtle::new(),
         }
     }
 
@@ -222,11 +225,108 @@ impl<'a> Vm<'a> {
                     let _ = self.stack.pop().ok_or(VmError::StackUnderflow)?;
                     self.ip += 1;
                 }
+                Opcode::TurtleForward => {
+                    let dist = self.pop_f32("FORWARD")?;
+                    self.turtle.forward(dist);
+                    self.ip += 1;
+                }
+                Opcode::TurtleBack => {
+                    let dist = self.pop_f32("BACK")?;
+                    self.turtle.back(dist);
+                    self.ip += 1;
+                }
+                Opcode::TurtleRight => {
+                    let angle = self.pop_f32("RIGHT")?;
+                    self.turtle.right(angle);
+                    self.ip += 1;
+                }
+                Opcode::TurtleLeft => {
+                    let angle = self.pop_f32("LEFT")?;
+                    self.turtle.left(angle);
+                    self.ip += 1;
+                }
+                Opcode::TurtlePenUp => {
+                    self.turtle.pen_up();
+                    self.ip += 1;
+                }
+                Opcode::TurtlePenDown => {
+                    self.turtle.pen_down();
+                    self.ip += 1;
+                }
+                Opcode::TurtleColor => {
+                    let val = self.stack.pop().ok_or(VmError::StackUnderflow)?;
+                    let color = match val {
+                        Value::Number(n) => ColorRgba::from_u32_rgb(n as u32),
+                        Value::StringLit(s) => match s.to_ascii_lowercase().as_str() {
+                            "black" => ColorRgba::BLACK,
+                            "white" => ColorRgba::WHITE,
+                            "red" => ColorRgba::RED,
+                            "green" => ColorRgba::GREEN,
+                            "blue" => ColorRgba::BLUE,
+                            "yellow" => ColorRgba::rgb(255, 255, 0),
+                            "cyan" => ColorRgba::rgb(0, 255, 255),
+                            "magenta" => ColorRgba::rgb(255, 0, 255),
+                            _ => ColorRgba::WHITE,
+                        },
+                        _ => return Err(VmError::TypeMismatch("Expected color number or string")),
+                    };
+                    self.turtle.set_color(color);
+                    self.ip += 1;
+                }
+                Opcode::TurtleWidth => {
+                    let w = self.pop_f32("WIDTH")?;
+                    self.turtle.set_width(w);
+                    self.ip += 1;
+                }
+                Opcode::TurtleHome => {
+                    self.turtle.home();
+                    self.ip += 1;
+                }
+                Opcode::TurtleClear => {
+                    self.turtle.clear();
+                    self.ip += 1;
+                }
+                Opcode::TurtleSetPos => {
+                    let y = self.pop_f32("SETPOS Y")?;
+                    let x = self.pop_f32("SETPOS X")?;
+                    self.turtle.set_pos(x, y);
+                    self.ip += 1;
+                }
+                Opcode::TurtleSetHeading => {
+                    let deg = self.pop_f32("SETHEADING")?;
+                    self.turtle.set_heading(deg);
+                    self.ip += 1;
+                }
+                Opcode::TurtleLabel => {
+                    let text = self.stack.pop().ok_or(VmError::StackUnderflow)?.to_string_repr();
+                    self.turtle.label(&text);
+                    self.ip += 1;
+                }
+                Opcode::CommitTurtle => {
+                    let target_val = self.stack.pop().ok_or(VmError::StackUnderflow)?;
+                    let target = self.resolve_coord(&target_val)?;
+                    if !self.writable_cells.contains(&target) {
+                        return Err(VmError::CellAccessDenied { coord: target, operation: CellOperation::Write });
+                    }
+                    if let Some(cell) = self.sheet.get_cell(target) {
+                        if matches!(cell.value, CellValue::Formula { .. }) {
+                            return Err(VmError::WriteToFormulaCell(target));
+                        }
+                    }
+                    let blob_bytes = self.turtle.buffer.to_bytes();
+                    self.staged_writes.insert(target, CellValue::Blob { bytes: blob_bytes });
+                    self.ip += 1;
+                }
                 Opcode::Halt => break,
             }
         }
 
         Ok(self.staged_writes.len())
+    }
+
+    fn pop_f32(&mut self, context: &'static str) -> Result<f32, VmError> {
+        let val = self.stack.pop().ok_or(VmError::StackUnderflow)?;
+        val.as_f64().map(|n| n as f32).ok_or(VmError::TypeMismatch(context))
     }
 
     fn resolve_coord(&self, val: &Value) -> Result<Coord, VmError> {

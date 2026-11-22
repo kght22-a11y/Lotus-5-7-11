@@ -67,4 +67,41 @@ impl BasicRunner {
 
         Ok(num_writes)
     }
+
+    /// Compiles and executes a Modern BASIC script, returning the number of committed writes
+    /// and the accumulated vector buffer from any turtle graphics operations.
+    pub fn execute_with_turtle(
+        sheet: &mut Sheet,
+        owner: Coord,
+        source: &str,
+        readable_grants: &[Coord],
+        writable_grants: &[Coord],
+        max_steps: Option<usize>,
+    ) -> Result<(usize, crate::model::VectorBuffer), BasicError> {
+        let code = Compiler::compile(source).map_err(BasicError::Compile)?;
+
+        let mut vm = Vm::new(sheet, &code).with_cell_access(owner, readable_grants, writable_grants);
+        if let Some(steps) = max_steps {
+            vm = vm.with_step_limit(steps);
+        }
+
+        vm.run().map_err(BasicError::Runtime)?;
+
+        let vector_output = vm.turtle.buffer.clone();
+
+        // Atomic Commit of staged writes
+        let num_writes = vm.staged_writes.len();
+        for (coord, val) in vm.staged_writes {
+            if let Some(cell) = sheet.cells.get_mut(&coord) {
+                cell.value = val;
+            } else {
+                sheet.set_cell(crate::model::Cell::new(coord, val));
+            }
+        }
+
+        // Trigger DAG recalculation
+        CalcEngine::recalculate_sheet(sheet, None).map_err(BasicError::Recalc)?;
+
+        Ok((num_writes, vector_output))
+    }
 }

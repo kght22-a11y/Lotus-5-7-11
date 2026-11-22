@@ -1,0 +1,8 @@
+[package]
+name = "lotus-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lotus-core = { path = "../lotus-core" }
+# We use simple string concatenation for SVG to keep it zero-dependency and "standalone"

@@ -307,7 +307,7 @@ impl Workbook {
         let mut entries = Vec::new();
 
         for sheet in &self.sheets {
-            if let Some((scol, srow)) = sheet.bounds() {
+            if let Some((scol, srow)) = sheet.active_grid_bounds() {
                 has_cells = true;
                 if scol > max_col {
                     max_col = scol;

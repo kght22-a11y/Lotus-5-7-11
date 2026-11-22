@@ -257,6 +257,146 @@ impl<'a> Compiler<'a> {
                     self.code[jump_false_idx] = Opcode::JumpIfFalse(self.code.len());
                     Ok(())
                 }
+                "FOR" => {
+                    self.advance(); // consume FOR
+                    let var_name = match self.advance() {
+                        Some(Token::Ident(name)) => name,
+                        _ => return Err(CompileError::SyntaxError("Expected variable name after FOR".into())),
+                    };
+                    match self.advance() {
+                        Some(Token::Eq) => {}
+                        _ => return Err(CompileError::SyntaxError("Expected '=' in FOR loop".into())),
+                    }
+                    self.parse_expr()?;
+                    self.code.push(Opcode::Store(var_name.clone()));
+
+                    match self.advance() {
+                        Some(Token::Ident(to_word)) if to_word.to_ascii_uppercase() == "TO" => {}
+                        _ => return Err(CompileError::SyntaxError("Expected 'TO' in FOR loop".into())),
+                    }
+
+                    let loop_start = self.code.len();
+                    self.code.push(Opcode::Load(var_name.clone()));
+                    self.parse_expr()?;
+                    self.code.push(Opcode::LtEq);
+                    let jump_false_idx = self.code.len();
+                    self.code.push(Opcode::JumpIfFalse(0));
+
+                    self.skip_newlines();
+                    while let Some(t) = self.peek() {
+                        if let Token::Ident(w) = t {
+                            if w.to_ascii_uppercase() == "NEXT" {
+                                self.advance(); // consume NEXT
+                                if let Some(Token::Ident(v)) = self.peek() {
+                                    if v.to_ascii_uppercase() == var_name.to_ascii_uppercase() {
+                                        self.advance(); // consume optional variable after NEXT
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        self.parse_statement()?;
+                        self.skip_newlines();
+                    }
+
+                    // Increment variable: var = var + 1
+                    self.code.push(Opcode::Load(var_name.clone()));
+                    self.code.push(Opcode::Push(Value::Number(1.0)));
+                    self.code.push(Opcode::Add);
+                    self.code.push(Opcode::Store(var_name));
+
+                    self.code.push(Opcode::Jump(loop_start));
+                    self.code[jump_false_idx] = Opcode::JumpIfFalse(self.code.len());
+                    Ok(())
+                }
+                "FORWARD" | "FD" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleForward);
+                    Ok(())
+                }
+                "BACK" | "BK" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleBack);
+                    Ok(())
+                }
+                "RIGHT" | "RT" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleRight);
+                    Ok(())
+                }
+                "LEFT" | "LT" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleLeft);
+                    Ok(())
+                }
+                "PENUP" | "PU" => {
+                    self.advance();
+                    self.code.push(Opcode::TurtlePenUp);
+                    Ok(())
+                }
+                "PENDOWN" | "PD" => {
+                    self.advance();
+                    self.code.push(Opcode::TurtlePenDown);
+                    Ok(())
+                }
+                "COLOR" | "PENCOLOR" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleColor);
+                    Ok(())
+                }
+                "WIDTH" | "PENWIDTH" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleWidth);
+                    Ok(())
+                }
+                "HOME" => {
+                    self.advance();
+                    self.code.push(Opcode::TurtleHome);
+                    Ok(())
+                }
+                "CLEAR" => {
+                    self.advance();
+                    self.code.push(Opcode::TurtleClear);
+                    Ok(())
+                }
+                "SETPOS" => {
+                    self.advance();
+                    let has_paren = self.peek() == Some(&Token::LParen);
+                    if has_paren { self.advance(); }
+                    self.parse_expr()?;
+                    if self.peek() == Some(&Token::Comma) { self.advance(); }
+                    self.parse_expr()?;
+                    if has_paren && self.peek() == Some(&Token::RParen) { self.advance(); }
+                    self.code.push(Opcode::TurtleSetPos);
+                    Ok(())
+                }
+                "SETHEADING" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleSetHeading);
+                    Ok(())
+                }
+                "LABEL" => {
+                    self.advance();
+                    self.parse_expr()?;
+                    self.code.push(Opcode::TurtleLabel);
+                    Ok(())
+                }
+                "COMMIT_TURTLE" | "SAVE_TURTLE" => {
+                    self.advance();
+                    let has_paren = self.peek() == Some(&Token::LParen);
+                    if has_paren { self.advance(); }
+                    self.parse_expr()?;
+                    if has_paren && self.peek() == Some(&Token::RParen) { self.advance(); }
+                    self.code.push(Opcode::CommitTurtle);
+                    Ok(())
+                }
                 _ => {
                     // Implicit LET: var = expr
                     self.advance(); // consume var name
@@ -393,6 +533,15 @@ fn tokenize_basic(source: &str) -> Vec<Token> {
         }
 
         match c {
+            ':' => tokens.push(Token::Newline),
+            '\'' => {
+                // Comment until end of line
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                tokens.push(Token::Newline);
+                continue;
+            }
             '+' => tokens.push(Token::Plus),
             '-' => tokens.push(Token::Minus),
             '*' => tokens.push(Token::Star),

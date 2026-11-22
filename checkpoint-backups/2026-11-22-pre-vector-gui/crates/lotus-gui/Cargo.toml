@@ -1,0 +1,9 @@
+[package]
+name = "lotus-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lotus-core = { path = "../lotus-core" }
+winit = "0.29"
+softbuffer = "0.4"

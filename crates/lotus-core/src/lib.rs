@@ -8,6 +8,7 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+pub mod app;
 pub mod basic;
 pub mod calc;
 pub mod doc;
@@ -34,6 +35,7 @@ pub use model::{
 pub use storage::{deserialize_workbook, serialize_workbook, ParseError};
 pub use substrate::{Partition, SharedMailbox, SubstrateDescriptor};
 pub use tui::{MenuAction, MenuItem, MenuState, WorkspaceSession};
+pub use app::{App, Event, Host, Key, MemoryHost, Mods, PointerButton};
 pub use view::{
     Bitmap, ContextMenu, ContextMenuAction, ContextMenuItem, GridRenderer, HersheyFont,
     HersheyGlyph, StrokeSegment, SubpixelRasterizer, Transform2D, VectorWorkspaceView,

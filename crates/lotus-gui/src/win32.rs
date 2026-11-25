@@ -33,6 +33,8 @@ pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_RBUTTONDOWN: u32 = 0x0204;
 
 pub const VK_BACK: usize = 0x08;
+pub const VK_SHIFT: usize = 0x10;
+pub const VK_CONTROL: usize = 0x11;
 pub const VK_RETURN: usize = 0x0D;
 pub const VK_ESCAPE: usize = 0x1B;
 pub const VK_LEFT: usize = 0x25;

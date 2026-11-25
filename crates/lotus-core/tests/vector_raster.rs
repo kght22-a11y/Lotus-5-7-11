@@ -260,11 +260,11 @@ fn test_context_menu_with_nested_lotus_commands_and_workspace_view() {
     context_menu.open_at(80.0, 120.0);
     assert!(context_menu.is_visible);
 
-    // Hover over "Lotus Commands" (index 5)
+    // Hover over "Lotus" (index 5)
     // y = 120 (start) + 4 (padding) + 4 * 22 (items 0..3) + 6 (sep) + 10 = 228.0
     context_menu.handle_mouse_move(100.0, 228.0);
-    assert_eq!(context_menu.hovered_idx, Some(5));
-    assert_eq!(context_menu.active_submenu_idx, Some(5));
+    assert_eq!(context_menu.hovered_idx(), Some(5));
+    assert_eq!(context_menu.active_submenu_idx(), Some(5));
 
     // Submenu is popped out: hover over "File" -> "Save" (/FS)
     let (sub_rect, sub_items) = context_menu.submenu_bounds().unwrap();

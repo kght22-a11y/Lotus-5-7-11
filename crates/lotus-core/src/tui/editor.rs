@@ -12,6 +12,8 @@ use crate::{
 pub struct WorkspaceSession {
     pub cursor: Coord,
     pub edit_buffer: Option<String>,
+    pub edit_cursor: usize,
+    pub edit_selection_anchor: Option<usize>,
     pub menu: MenuState,
     pub status_message: String,
     pub is_dirty: bool,
@@ -44,6 +46,28 @@ mod tests {
         assert!(lines.next().unwrap().starts_with("Main | A1"));
         assert_eq!(lines.next(), Some("EDIT: 100 | Enter commits, Esc cancels"));
     }
+
+    #[test]
+    fn test_edit_selection_and_cursor_movement() {
+        let mut session = WorkspaceSession::new();
+        session.edit_buffer = Some("HELLO WORLD".into());
+        session.edit_cursor = 11; // at end
+
+        // Shift+Left 5 times selects "WORLD"
+        for _ in 0..5 {
+            session.move_edit_cursor(-1, true);
+        }
+        assert_eq!(session.edit_cursor, 6);
+        assert_eq!(session.edit_selection_anchor, Some(11));
+        assert_eq!(session.selection_range(), Some((6, 11)));
+        assert_eq!(session.selected_text().as_deref(), Some("WORLD"));
+
+        // Typing a character replaces selection
+        session.insert_char('!');
+        assert_eq!(session.edit_buffer.as_deref(), Some("HELLO !"));
+        assert_eq!(session.edit_cursor, 7);
+        assert_eq!(session.selection_range(), None);
+    }
 }
 
 impl WorkspaceSession {
@@ -51,6 +75,8 @@ impl WorkspaceSession {
         Self {
             cursor: Coord::new(0, 0),
             edit_buffer: None,
+            edit_cursor: 0,
+            edit_selection_anchor: None,
             menu: MenuState::new(),
             status_message: "READY (Press '/' for Lotus Menu, Enter to edit cell)".into(),
             is_dirty: false,
@@ -83,16 +109,22 @@ impl WorkspaceSession {
             None => String::new(),
         };
 
+        self.edit_cursor = current_text.len();
+        self.edit_selection_anchor = None;
         self.edit_buffer = Some(current_text);
         self.status_message = "EDIT (Enter to commit, Esc to cancel)".into();
     }
 
     pub fn cancel_editing(&mut self) {
         self.edit_buffer = None;
+        self.edit_cursor = 0;
+        self.edit_selection_anchor = None;
         self.status_message = "READY".into();
     }
 
     pub fn commit_editing(&mut self, sheet: &mut Sheet) {
+        self.edit_cursor = 0;
+        self.edit_selection_anchor = None;
         if let Some(text) = self.edit_buffer.take() {
             let text = text.trim();
             if text.is_empty() {
@@ -125,6 +157,140 @@ impl WorkspaceSession {
             // Recalculate sheet
             let _ = CalcEngine::recalculate_sheet(sheet, None);
             self.status_message = format!("Cell {} updated.", self.cursor.to_a1());
+        }
+    }
+
+    /// Returns the active selection byte range `(start, end)` if any text is selected.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.edit_selection_anchor?;
+        let cursor = self.edit_cursor;
+        if anchor == cursor {
+            None
+        } else {
+            Some((anchor.min(cursor), anchor.max(cursor)))
+        }
+    }
+
+    /// Returns the currently selected text substring if any.
+    pub fn selected_text(&self) -> Option<String> {
+        let buf = self.edit_buffer.as_ref()?;
+        let (start, end) = self.selection_range()?;
+        if start <= end && end <= buf.len() {
+            Some(buf[start..end].to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Deletes the currently selected text range. Returns true if text was deleted.
+    pub fn delete_selection(&mut self) -> bool {
+        if let Some((start, end)) = self.selection_range() {
+            if let Some(ref mut buf) = self.edit_buffer {
+                if start <= end && end <= buf.len() {
+                    buf.replace_range(start..end, "");
+                    self.edit_cursor = start;
+                    self.edit_selection_anchor = None;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Insert a character into the edit buffer at the current cursor, replacing any selection.
+    pub fn insert_char(&mut self, ch: char) {
+        self.delete_selection();
+        if let Some(ref mut buf) = self.edit_buffer {
+            let idx = self.edit_cursor.min(buf.len());
+            buf.insert(idx, ch);
+            self.edit_cursor = idx + ch.len_utf8();
+            self.edit_selection_anchor = None;
+        } else {
+            self.edit_buffer = Some(ch.to_string());
+            self.edit_cursor = ch.len_utf8();
+            self.edit_selection_anchor = None;
+        }
+    }
+
+    /// Insert a string into the edit buffer, replacing any selection.
+    pub fn insert_str(&mut self, s: &str) {
+        self.delete_selection();
+        if let Some(ref mut buf) = self.edit_buffer {
+            let idx = self.edit_cursor.min(buf.len());
+            buf.insert_str(idx, s);
+            self.edit_cursor = idx + s.len();
+            self.edit_selection_anchor = None;
+        } else {
+            self.edit_buffer = Some(s.into());
+            self.edit_cursor = s.len();
+            self.edit_selection_anchor = None;
+        }
+    }
+
+    /// Backspace key: deletes selection, or character before cursor.
+    pub fn backspace(&mut self) {
+        if !self.delete_selection() {
+            if let Some(ref mut buf) = self.edit_buffer {
+                if self.edit_cursor > 0 && self.edit_cursor <= buf.len() {
+                    let mut prev_idx = self.edit_cursor - 1;
+                    while !buf.is_char_boundary(prev_idx) && prev_idx > 0 {
+                        prev_idx -= 1;
+                    }
+                    buf.drain(prev_idx..self.edit_cursor);
+                    self.edit_cursor = prev_idx;
+                }
+            }
+        }
+    }
+
+    /// Delete key: deletes selection, or character after cursor.
+    pub fn delete_forward(&mut self) {
+        if !self.delete_selection() {
+            if let Some(ref mut buf) = self.edit_buffer {
+                if self.edit_cursor < buf.len() {
+                    let mut next_idx = self.edit_cursor + 1;
+                    while !buf.is_char_boundary(next_idx) && next_idx < buf.len() {
+                        next_idx += 1;
+                    }
+                    buf.drain(self.edit_cursor..next_idx);
+                }
+            }
+        }
+    }
+
+    /// Move the edit cursor left or right. If `select` is true (Shift+Arrow), extends selection!
+    pub fn move_edit_cursor(&mut self, delta: i32, select: bool) {
+        if let Some(ref buf) = self.edit_buffer {
+            let len = buf.len();
+            if select && self.edit_selection_anchor.is_none() {
+                self.edit_selection_anchor = Some(self.edit_cursor);
+            } else if !select {
+                self.edit_selection_anchor = None;
+            }
+
+            if delta < 0 {
+                let mut new_pos = self.edit_cursor;
+                for _ in 0..(-delta) {
+                    if new_pos > 0 {
+                        new_pos -= 1;
+                        while !buf.is_char_boundary(new_pos) && new_pos > 0 {
+                            new_pos -= 1;
+                        }
+                    }
+                }
+                self.edit_cursor = new_pos;
+            } else if delta > 0 {
+                let mut new_pos = self.edit_cursor;
+                for _ in 0..delta {
+                    if new_pos < len {
+                        new_pos += 1;
+                        while !buf.is_char_boundary(new_pos) && new_pos < len {
+                            new_pos += 1;
+                        }
+                    }
+                }
+                self.edit_cursor = new_pos;
+            }
         }
     }
 

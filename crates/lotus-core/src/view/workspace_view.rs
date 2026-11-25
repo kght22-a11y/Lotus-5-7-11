@@ -22,6 +22,8 @@ pub struct VectorWorkspaceView {
     pub header_col_width: f32,
     pub control_panel_height: f32,
     pub font_scale: f32,
+    pub scroll_col: u32,
+    pub scroll_row: u32,
 }
 
 impl Default for VectorWorkspaceView {
@@ -31,6 +33,8 @@ impl Default for VectorWorkspaceView {
             header_col_width: 50.0,
             control_panel_height: 48.0, // 2 lines: 24px status + 24px edit/menu
             font_scale: 0.75,
+            scroll_col: 0,
+            scroll_row: 0,
         }
     }
 }
@@ -40,16 +44,37 @@ impl VectorWorkspaceView {
         Self::default()
     }
 
-    /// Calculate the top-left (x, y) and (width, height) bounding rectangle of a grid cell.
+    /// Pan/move the viewport by delta columns and delta rows.
+    pub fn pan(&mut self, delta_col: i32, delta_row: i32) {
+        let new_col = (self.scroll_col as i64 + i64::from(delta_col)).clamp(0, 16_383) as u32;
+        let new_row = (self.scroll_row as i64 + i64::from(delta_row)).clamp(0, 1_048_575) as u32;
+        self.scroll_col = new_col;
+        self.scroll_row = new_row;
+    }
+
+    /// Calculate the top-left (x, y) and (width, height) bounding rectangle of a grid cell
+    /// relative to the current viewport scroll position.
     pub fn cell_rect(&self, sheet: &Sheet, coord: Coord) -> Rect2D {
         let mut x = self.header_col_width;
-        for c in 0..coord.col {
-            x += sheet.col_width(c) as f32;
+        if coord.col >= self.scroll_col {
+            for c in self.scroll_col..coord.col {
+                x += sheet.col_width(c) as f32;
+            }
+        } else {
+            for c in coord.col..self.scroll_col {
+                x -= sheet.col_width(c) as f32;
+            }
         }
 
         let mut y = self.control_panel_height + self.header_row_height;
-        for r in 0..coord.row {
-            y += sheet.row_height(r) as f32;
+        if coord.row >= self.scroll_row {
+            for r in self.scroll_row..coord.row {
+                y += sheet.row_height(r) as f32;
+            }
+        } else {
+            for r in coord.row..self.scroll_row {
+                y -= sheet.row_height(r) as f32;
+            }
         }
 
         let cell = sheet.get_cell(coord);
@@ -69,7 +94,7 @@ impl VectorWorkspaceView {
         Rect2D::new(x, y, x + w, y + h)
     }
 
-    /// Convert a mouse screen position (x, y) to a spreadsheet `Coord`.
+    /// Convert a mouse screen position (x, y) to a spreadsheet `Coord`, accounting for viewport scroll.
     pub fn hit_test_cell(&self, sheet: &Sheet, screen_x: f32, screen_y: f32) -> Option<Coord> {
         let grid_min_x = self.header_col_width;
         let grid_min_y = self.control_panel_height + self.header_row_height;
@@ -78,10 +103,10 @@ impl VectorWorkspaceView {
             return None;
         }
 
-        // Determine column
+        // Determine column starting from scroll_col
         let mut cur_x = grid_min_x;
         let mut target_col = None;
-        for c in 0..1000 {
+        for c in self.scroll_col..(self.scroll_col + 1000) {
             let w = sheet.col_width(c) as f32;
             if screen_x >= cur_x && screen_x < cur_x + w {
                 target_col = Some(c);
@@ -93,10 +118,10 @@ impl VectorWorkspaceView {
             }
         }
 
-        // Determine row
+        // Determine row starting from scroll_row
         let mut cur_y = grid_min_y;
         let mut target_row = None;
-        for r in 0..1000 {
+        for r in self.scroll_row..(self.scroll_row + 1000) {
             let h = sheet.row_height(r) as f32;
             if screen_y >= cur_y && screen_y < cur_y + h {
                 target_row = Some(r);
@@ -184,9 +209,38 @@ impl VectorWorkspaceView {
             vec_buf.set_color(ColorRgba::rgb(0, 230, 160)); // Cyan / Lotus Accent
             font.draw_string(&menu_l1, 10.0, 40.0, 0.70, vec_buf);
         } else if let Some(ref edit_text) = session.edit_buffer {
-            vec_buf.set_color(ColorRgba::rgb(255, 204, 0)); // Bright Amber for edits
-            let edit_display = format!("EDIT: {}_", edit_text);
-            font.draw_string(&edit_display, 10.0, 40.0, 0.75, vec_buf);
+            let prefix = "EDIT: ";
+            let (pw, _) = font.measure_string(prefix, 0.75);
+
+            // Highlight selected text range in Navy Blue behind text
+            if let Some((sel_start, sel_end)) = session.selection_range() {
+                let start_idx = sel_start.min(edit_text.len());
+                let end_idx = sel_end.min(edit_text.len());
+                let before_sel = &edit_text[..start_idx];
+                let (before_w, _) = font.measure_string(before_sel, 0.75);
+                let sel_str = &edit_text[start_idx..end_idx];
+                let (sel_w, _) = font.measure_string(sel_str, 0.75);
+
+                let highlight_x = (10.0 + pw + before_w) as usize;
+                let highlight_y = 26;
+                bitmap.fill_rect(highlight_x, highlight_y, (sel_w.ceil() as usize).max(2), 20, 0x00000080);
+            }
+
+            vec_buf.set_color(ColorRgba::rgb(255, 204, 0)); // Bright Amber for edit line
+            font.draw_string(prefix, 10.0, 40.0, 0.75, vec_buf);
+
+            let text_x = 10.0 + pw;
+            font.draw_string(edit_text, text_x, 40.0, 0.75, vec_buf);
+
+            // Draw vertical text cursor
+            let cur_idx = session.edit_cursor.min(edit_text.len());
+            let before_cur = &edit_text[..cur_idx];
+            let (cur_offset, _) = font.measure_string(before_cur, 0.75);
+            let cur_x = text_x + cur_offset;
+            vec_buf.set_color(ColorRgba::WHITE);
+            vec_buf.set_width(1.5);
+            vec_buf.move_to(cur_x, 26.0);
+            vec_buf.line_to(cur_x, 44.0);
         } else {
             vec_buf.set_color(ColorRgba::rgb(140, 160, 180));
             font.draw_string("READY (Press '/' for Lotus Menu, Right-Click for Context Menu)", 10.0, 40.0, 0.65, vec_buf);
@@ -194,8 +248,6 @@ impl VectorWorkspaceView {
 
         // 3. Headers & Grid Dimensions
         let grid_y0 = self.control_panel_height + self.header_row_height;
-        let visible_cols = 10;
-        let visible_rows = 24;
 
         // Header Backgrounds: Classic Header Tint (0x001B2430)
         bitmap.fill_rect(0, self.control_panel_height as usize, bitmap.width, self.header_row_height as usize, 0x001B2430);
@@ -204,9 +256,11 @@ impl VectorWorkspaceView {
         // Top-left corner box
         bitmap.fill_rect(0, self.control_panel_height as usize, self.header_col_width as usize, self.header_row_height as usize, 0x00243040);
 
-        // 4. Draw Column Headers (A, B, C, ...)
+        // 4. Draw Column Headers (starting from self.scroll_col)
         let mut cur_col_x = self.header_col_width;
-        for c in 0..visible_cols {
+        let mut visible_cols = Vec::new();
+        let mut c = self.scroll_col;
+        while cur_col_x < bmp_w && c < 16_384 {
             let w = sheet.col_width(c) as f32;
             let col_name = Coord::new(c, 0).to_a1();
             let col_letter = col_name.trim_end_matches(|ch: char| ch.is_ascii_digit());
@@ -221,13 +275,16 @@ impl VectorWorkspaceView {
             vec_buf.set_color(ColorRgba::rgb(200, 220, 240));
             font.draw_string(col_letter, tx, ty, 0.70, vec_buf);
 
+            visible_cols.push(c);
             cur_col_x += w;
-            if cur_col_x > bmp_w { break; }
+            c += 1;
         }
 
-        // 5. Draw Row Headers (1, 2, 3, ...)
+        // 5. Draw Row Headers (starting from self.scroll_row)
         let mut cur_row_y = grid_y0;
-        for r in 0..visible_rows {
+        let mut visible_rows = Vec::new();
+        let mut r = self.scroll_row;
+        while cur_row_y < bmp_h && r < 1_048_576 {
             let h = sheet.row_height(r) as f32;
             let row_str = format!("{}", r + 1);
 
@@ -241,13 +298,14 @@ impl VectorWorkspaceView {
             vec_buf.set_color(ColorRgba::rgb(200, 220, 240));
             font.draw_string(&row_str, rx, ry, 0.70, vec_buf);
 
+            visible_rows.push(r);
             cur_row_y += h;
-            if cur_row_y > bmp_h { break; }
+            r += 1;
         }
 
         // 6. Render Spreadsheet Cells
-        for r in 0..visible_rows {
-            for c in 0..visible_cols {
+        for &r in &visible_rows {
+            for &c in &visible_cols {
                 let coord = Coord::new(c, r);
                 if let Some(cell) = sheet.get_cell(coord) {
                     let rect = self.cell_rect(sheet, coord);
@@ -294,14 +352,18 @@ impl VectorWorkspaceView {
 
         // 7. Active Cell Selection Cursor Box
         let cursor_rect = self.cell_rect(sheet, session.cursor);
-        vec_buf.set_width(2.0);
-        vec_buf.set_color(ColorRgba::rgb(0, 230, 160)); // Lotus Cyan Focus Box
-        vec_buf.rect(cursor_rect.min_x, cursor_rect.min_y, cursor_rect.width(), cursor_rect.height());
+        if cursor_rect.max_x > self.header_col_width && cursor_rect.max_y > grid_y0
+            && cursor_rect.min_x < bmp_w && cursor_rect.min_y < bmp_h
+        {
+            vec_buf.set_width(2.0);
+            vec_buf.set_color(ColorRgba::rgb(0, 230, 160)); // Lotus Cyan Focus Box
+            vec_buf.rect(cursor_rect.min_x, cursor_rect.min_y, cursor_rect.width(), cursor_rect.height());
 
-        // Inner soft glow line
-        vec_buf.set_width(1.0);
-        vec_buf.set_color(ColorRgba::WHITE);
-        vec_buf.rect(cursor_rect.min_x + 1.0, cursor_rect.min_y + 1.0, cursor_rect.width() - 2.0, cursor_rect.height() - 2.0);
+            // Inner soft glow line
+            vec_buf.set_width(1.0);
+            vec_buf.set_color(ColorRgba::WHITE);
+            vec_buf.rect(cursor_rect.min_x + 1.0, cursor_rect.min_y + 1.0, cursor_rect.width() - 2.0, cursor_rect.height() - 2.0);
+        }
 
         // 8. Rasterize Vector Paths (strokes, headers, cell text) onto the bitmap
         SubpixelRasterizer::render(bitmap, vec_buf, &Transform2D::identity());
@@ -366,5 +428,39 @@ mod tests {
 
         let lit_pixels = bitmap.pixels.iter().filter(|&&p| p != 0).count();
         assert!(lit_pixels > 1000, "Workspace render should illuminate pixels");
+    }
+
+    #[test]
+    fn test_shift_view_panning() {
+        let mut sheet = Sheet::new("s1", "Main");
+        sheet.set_col_width(0, 100.0);
+        sheet.set_col_width(1, 100.0);
+        sheet.set_col_width(2, 100.0);
+        sheet.set_row_height(0, 30.0);
+        sheet.set_row_height(1, 30.0);
+
+        let mut view = VectorWorkspaceView::new();
+        assert_eq!(view.scroll_col, 0);
+        assert_eq!(view.scroll_row, 0);
+
+        // Cell C1 at (2, 0): when scroll_col = 0, x = 50 + 100 + 100 = 250
+        assert_eq!(view.cell_rect(&sheet, Coord::new(2, 0)).min_x, 250.0);
+
+        // Pan view by 1 column right (Shift+Right)
+        view.pan(1, 0);
+        assert_eq!(view.scroll_col, 1);
+        // Cell C1 now appears at x = 50 + 100 = 150 (shifted left on screen)
+        assert_eq!(view.cell_rect(&sheet, Coord::new(2, 0)).min_x, 150.0);
+
+        // Pan view down by 1 row (Shift+Down)
+        view.pan(0, 1);
+        assert_eq!(view.scroll_row, 1);
+        // Cell A2 at (0, 1) now appears at grid origin y = 72
+        assert_eq!(view.cell_rect(&sheet, Coord::new(0, 1)).min_y, 72.0);
+
+        // Pan back
+        view.pan(-1, -1);
+        assert_eq!(view.scroll_col, 0);
+        assert_eq!(view.scroll_row, 0);
     }
 }

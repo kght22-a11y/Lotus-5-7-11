@@ -54,10 +54,22 @@ pub struct MenuState {
 
 impl MenuState {
     pub fn new() -> Self {
+        Self::with_root(default_lotus_menu())
+    }
+
+    /// Build a menu state over a custom tree. In debug builds the tree is
+    /// checked with [`validate_menu`] so a key collision fails loudly instead
+    /// of silently shadowing an item.
+    pub fn with_root(root: Vec<MenuItem>) -> Self {
+        debug_assert!(
+            validate_menu(&root).is_ok(),
+            "invalid menu tree: {:?}",
+            validate_menu(&root)
+        );
         Self {
             is_active: false,
             breadcrumbs: Vec::new(),
-            root: default_lotus_menu(),
+            root,
         }
     }
 
@@ -203,6 +215,44 @@ impl MenuState {
     }
 }
 
+/// Check a menu tree for mistakes that would otherwise surface as a dead or
+/// shadowed item at runtime:
+///
+/// - two items on the same level share a hotkey (first-letter jump takes the
+///   first match, so the second item could never be reached by keyboard);
+/// - a group (has submenus) also carries an action, or a leaf has none.
+///
+/// The error names the slash-path of the offender, e.g. `/WR`.
+pub fn validate_menu(items: &[MenuItem]) -> Result<(), String> {
+    validate_level(items, "/")
+}
+
+fn validate_level(items: &[MenuItem], prefix: &str) -> Result<(), String> {
+    for (i, item) in items.iter().enumerate() {
+        let mut path = String::from(prefix);
+        path.push(item.key);
+
+        if let Some(other) = items[i + 1..].iter().find(|o| o.key == item.key) {
+            return Err(format!(
+                "duplicate hotkey '{}' at {}: \"{}\" and \"{}\"",
+                item.key, prefix, item.label, other.label
+            ));
+        }
+
+        if item.submenus.is_empty() {
+            if item.action == MenuAction::None {
+                return Err(format!("{} \"{}\" has neither an action nor submenus", path, item.label));
+            }
+        } else {
+            if item.action != MenuAction::None {
+                return Err(format!("{} \"{}\" is a group but also carries an action", path, item.label));
+            }
+            validate_level(&item.submenus, &path)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn default_lotus_menu() -> Vec<MenuItem> {
     vec![
         MenuItem::new('W', "Worksheet", "Global spreadsheet settings and actions", MenuAction::None)
@@ -282,5 +332,45 @@ mod tests {
         // Esc at top level dismisses menu
         menu.handle_key(None, false, false, false, true);
         assert!(!menu.is_active);
+    }
+
+    #[test]
+    fn default_menu_tree_is_valid() {
+        assert_eq!(validate_menu(&default_lotus_menu()), Ok(()));
+    }
+
+    #[test]
+    fn validate_menu_rejects_duplicate_hotkeys_on_one_level() {
+        let tree = vec![
+            MenuItem::new('F', "File", "", MenuAction::None).with_submenus(vec![
+                MenuItem::new('S', "Save", "", MenuAction::FileSave),
+                MenuItem::new('S', "Save As", "", MenuAction::FileSave),
+            ]),
+        ];
+        let err = validate_menu(&tree).unwrap_err();
+        assert!(err.contains("duplicate hotkey 'S'"), "{err}");
+        assert!(err.contains("/F"), "{err}");
+    }
+
+    #[test]
+    fn validate_menu_allows_same_hotkey_on_different_levels() {
+        // /FR and /WR share 'R' because they live under different groups.
+        let tree = vec![
+            MenuItem::new('F', "File", "", MenuAction::None)
+                .with_submenus(vec![MenuItem::new('R', "Retrieve", "", MenuAction::FileReload)]),
+            MenuItem::new('W', "Worksheet", "", MenuAction::None)
+                .with_submenus(vec![MenuItem::new('R', "Recalculate", "", MenuAction::RecalculateAll)]),
+        ];
+        assert_eq!(validate_menu(&tree), Ok(()));
+    }
+
+    #[test]
+    fn validate_menu_rejects_dead_leaves_and_groups_with_actions() {
+        let dead_leaf = vec![MenuItem::new('X', "Nothing", "", MenuAction::None)];
+        assert!(validate_menu(&dead_leaf).unwrap_err().contains("neither an action nor submenus"));
+
+        let busy_group = vec![MenuItem::new('G', "Group", "", MenuAction::Quit)
+            .with_submenus(vec![MenuItem::new('Q', "Quit", "", MenuAction::Quit)])];
+        assert!(validate_menu(&busy_group).unwrap_err().contains("group but also carries an action"));
     }
 }

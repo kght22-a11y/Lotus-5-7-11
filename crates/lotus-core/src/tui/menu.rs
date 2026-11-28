@@ -18,6 +18,34 @@ pub enum MenuAction {
     TOCJump,
     Quit,
     OrphanCheck,
+    // Edit
+    EditUndo,
+    EditRedo,
+    EditCut,
+    EditCopy,
+    EditPaste,
+    EditClear,
+    EditSelectAll,
+    EditFind,
+    EditFindNext,
+    EditGoTo,
+    // Columns and rows
+    InsertColumn,
+    DeleteColumn,
+    ColumnWidth,
+    ColumnFit,
+    ColumnCollapse,
+    ColumnExpand,
+    InsertRow,
+    DeleteRow,
+    RowHeight,
+    RowCollapse,
+    RowExpand,
+    // Data
+    FillDown,
+    FillRight,
+    SortAscending,
+    SortDescending,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -259,6 +287,49 @@ pub fn default_lotus_menu() -> Vec<MenuItem> {
             .with_submenus(vec![
                 MenuItem::new('R', "Recalculate", "Recalculate all formulas across sheets", MenuAction::RecalculateAll),
                 MenuItem::new('O', "Orphans", "Audit workbook for broken document links and dangling formulas", MenuAction::OrphanCheck),
+            ]),
+        MenuItem::new('E', "Edit", "Undo, clipboard, selection, find and go to", MenuAction::None)
+            .with_submenus(vec![
+                MenuItem::new('U', "Undo", "Undo the last change (Ctrl+Z)", MenuAction::EditUndo),
+                MenuItem::new('R', "Redo", "Redo the change just undone (Ctrl+Y)", MenuAction::EditRedo),
+                MenuItem::new('X', "Cut", "Copy the selection and clear it (Ctrl+X)", MenuAction::EditCut),
+                MenuItem::new('C', "Copy", "Copy the selection to the clipboard (Ctrl+C)", MenuAction::EditCopy),
+                MenuItem::new('P', "Paste", "Paste the clipboard at the cursor (Ctrl+V)", MenuAction::EditPaste),
+                MenuItem::new('D', "Delete", "Clear the selected cells (Del)", MenuAction::EditClear),
+                MenuItem::new('A', "Select-all", "Select every used cell (Ctrl+A)", MenuAction::EditSelectAll),
+                MenuItem::new('F', "Find", "Find text in values, formulas and names (Ctrl+F)", MenuAction::EditFind),
+                MenuItem::new('N', "Next", "Find the next match (F3)", MenuAction::EditFindNext),
+                MenuItem::new('G', "Go-to", "Jump to a cell address or name (Ctrl+G)", MenuAction::EditGoTo),
+            ]),
+        MenuItem::new('C', "Column", "Insert, delete and size columns", MenuAction::None)
+            .with_submenus(vec![
+                MenuItem::new('I', "Insert", "Insert a column before the cursor", MenuAction::InsertColumn),
+                MenuItem::new('D', "Delete", "Delete the cursor's column", MenuAction::DeleteColumn),
+                MenuItem::new('W', "Width", "Set the column width (Ctrl+Shift+Left/Right)", MenuAction::ColumnWidth),
+                MenuItem::new('F', "Fit", "Fit the column to its widest value", MenuAction::ColumnFit),
+                MenuItem::new('C', "Collapse", "Squeeze the column down to a sliver (Ctrl+0)", MenuAction::ColumnCollapse),
+                MenuItem::new('E', "Expand", "Restore a collapsed column (Ctrl+Shift+0)", MenuAction::ColumnExpand),
+            ]),
+        MenuItem::new('R', "Row", "Insert, delete and size rows", MenuAction::None)
+            .with_submenus(vec![
+                MenuItem::new('I', "Insert", "Insert a row above the cursor", MenuAction::InsertRow),
+                MenuItem::new('D', "Delete", "Delete the cursor's row", MenuAction::DeleteRow),
+                MenuItem::new('H', "Height", "Set the row height (Ctrl+Shift+Up/Down)", MenuAction::RowHeight),
+                MenuItem::new('C', "Collapse", "Squeeze the row down to a sliver (Ctrl+9)", MenuAction::RowCollapse),
+                MenuItem::new('E', "Expand", "Restore a collapsed row (Ctrl+Shift+9)", MenuAction::RowExpand),
+            ]),
+        MenuItem::new('D', "Data", "Fill and sort the selection", MenuAction::None)
+            .with_submenus(vec![
+                MenuItem::new('F', "Fill", "Copy the first row or column through the selection", MenuAction::None)
+                    .with_submenus(vec![
+                        MenuItem::new('D', "Down", "Fill down (Ctrl+D)", MenuAction::FillDown),
+                        MenuItem::new('R', "Right", "Fill right (Ctrl+R)", MenuAction::FillRight),
+                    ]),
+                MenuItem::new('S', "Sort", "Sort the selected rows by the cursor's column", MenuAction::None)
+                    .with_submenus(vec![
+                        MenuItem::new('A', "Ascending", "Smallest first; empty cells last", MenuAction::SortAscending),
+                        MenuItem::new('D', "Descending", "Largest first; empty cells last", MenuAction::SortDescending),
+                    ]),
             ]),
         MenuItem::new('F', "File", "Disk operations and workbook persistence", MenuAction::None)
             .with_submenus(vec![

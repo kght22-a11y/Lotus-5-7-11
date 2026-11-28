@@ -16,7 +16,14 @@ pub enum Key {
     Escape,
     Backspace,
     Delete,
-    /// A letter pressed as a chord, e.g. `Ctrl+S` arrives as `Key::Char('s')`
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Tab,
+    /// A function key, `F(1)` to `F(12)`.
+    F(u8),
+    /// A letter or digit pressed as a chord, e.g. `Ctrl+S` arrives as `Key::Char('s')`
     /// with `mods.ctrl` set. Shells send the lowercase letter. Plain typing
     /// does not use this: it arrives as [`Event::Text`].
     Char(char),
@@ -48,7 +55,12 @@ pub enum Event {
     Key { key: Key, mods: Mods },
     /// A typed character (already layout- and IME-resolved by the shell).
     Text(char),
-    /// Pointer position in surface pixels, origin top-left.
-    PointerMove { x: f32, y: f32 },
+    /// Pointer position in surface pixels, origin top-left. `left_down` says
+    /// whether the left button is held, which is how a drag is followed.
+    PointerMove { x: f32, y: f32, left_down: bool },
     PointerDown { x: f32, y: f32, button: PointerButton },
+    PointerUp { x: f32, y: f32, button: PointerButton },
+    /// Scroll wheel or touchpad, in whole rows and columns: positive scrolls
+    /// down and to the right.
+    Scroll { cols: i32, rows: i32 },
 }

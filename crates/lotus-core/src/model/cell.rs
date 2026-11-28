@@ -1,7 +1,7 @@
 //! Cell data model and value representations.
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec::Vec};
 
 use super::coord::Coord;
 
@@ -29,6 +29,50 @@ pub enum CellValue {
 impl CellValue {
     pub fn is_empty(&self) -> bool {
         matches!(self, CellValue::Empty)
+    }
+
+    /// Interpret text the way typing it into a cell does: `=...` is a formula,
+    /// numbers and TRUE/FALSE are recognised, blank input is empty, anything
+    /// else is text. Typing, pasting and filling all go through this.
+    pub fn parse_input(text: &str) -> CellValue {
+        let text = text.trim();
+        if text.is_empty() {
+            CellValue::Empty
+        } else if text.starts_with('=') {
+            CellValue::Formula {
+                expr: text.into(),
+                cached_num: None,
+                cached_text: None,
+                cached_bool: None,
+            }
+        } else if let Ok(n) = text.parse::<f64>() {
+            CellValue::Number(n)
+        } else if text.eq_ignore_ascii_case("true") {
+            CellValue::Boolean(true)
+        } else if text.eq_ignore_ascii_case("false") {
+            CellValue::Boolean(false)
+        } else {
+            CellValue::Text(text.into())
+        }
+    }
+
+    /// The text shown in a grid cell: numbers to two decimals, formulas by
+    /// their last result, scripts and blobs as a tag.
+    pub fn display_text(&self) -> String {
+        match self {
+            CellValue::Number(n) => format!("{:.2}", n),
+            CellValue::Text(t) => t.clone(),
+            CellValue::Formula { cached_num, cached_text, cached_bool, .. } => cached_num
+                .map(|n| format!("{:.2}", n))
+                .or_else(|| cached_bool.map(|b| if b { "TRUE".into() } else { "FALSE".into() }))
+                .or_else(|| cached_text.clone())
+                .unwrap_or_else(|| "<...>".into()),
+            CellValue::Boolean(b) => (if *b { "TRUE" } else { "FALSE" }).into(),
+            CellValue::Basic { .. } => "[BASIC]".into(),
+            CellValue::Blob { .. } => "[BLOB]".into(),
+            CellValue::Error(e) => format!("#ERR: {}", e),
+            CellValue::Empty => String::new(),
+        }
     }
 
     pub fn type_name(&self) -> &'static str {

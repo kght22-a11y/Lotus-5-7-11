@@ -3,6 +3,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, string::ToString, vec::Vec};
 
+use crate::zlayer::{ZLayer, Manifest};
 use crate::model::{
     cell::{Cell, CellValue},
     coord::Coord,
@@ -21,6 +22,17 @@ pub enum ParseError {
     InvalidNumber(String),
     InvalidFormulaCache(String),
     BlobOverflow { expected: usize, available: usize },
+}
+
+/// Process pending z-layers and update workbook manifest during reload. This is where the AI's Z-layer updates are detected and staged for review.
+pub fn process_pending_zlayers(workbook: &mut Workbook) {
+    // In a real implementation this would:
+    // 1. Check if new z-layers have been appended to file
+    // 2. Parse them into proper structures 
+    // 3. Add entries to the manifest for user review
+    // 4. Mark them as pending status in the manifest
+    
+    // For now, just demonstrate the interface structure
 }
 
 pub fn deserialize_workbook(input: &[u8]) -> Result<Workbook, ParseError> {

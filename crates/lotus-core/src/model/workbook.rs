@@ -11,6 +11,7 @@ use super::{
     sheet::Sheet,
     toc::{TableOfContents, TocEntry},
 };
+use crate::zlayer::{Manifest, MerkleChain};
 use crate::{
     calc::ast::Expr,
     doc::{
@@ -29,6 +30,10 @@ pub struct Workbook {
     pub documents: Vec<Document>,
     /// Historical cell overlays, keyed by worksheet ID. The base sheets are Z=0.
     pub history: BTreeMap<String, HistoryEngine>,
+    /// Manifest tracking z-layer status and provenance
+    pub manifest: Manifest,
+    /// Merkle chain for z-layer integrity tracking
+    pub merkle_chain: MerkleChain,
 }
 
 impl Workbook {
@@ -40,6 +45,8 @@ impl Workbook {
             sheets: Vec::new(),
             documents: Vec::new(),
             history: BTreeMap::new(),
+            manifest: Manifest::new(),
+            merkle_chain: MerkleChain::new(),
         }
     }
 

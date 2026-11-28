@@ -3,12 +3,14 @@ pub mod engine;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
+pub mod refs;
 
 pub use ast::{BinaryOp, Expr, UnaryOp};
 pub use engine::CalcEngine;
 pub use eval::{EvalValue, Evaluator};
 pub use lexer::{Lexer, Token};
 pub use parser::{ParseError, Parser};
+pub use refs::{offset_refs, rewrite_refs, RefKind};
 
 #[cfg(test)]
 mod tests {

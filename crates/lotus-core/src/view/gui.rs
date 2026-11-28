@@ -134,7 +134,7 @@ impl ContextMenu {
             ContextMenuItem::item("Paste", "Ctrl+V", ContextMenuAction::Paste),
             ContextMenuItem::item("Clear", "Del", ContextMenuAction::Clear),
             ContextMenuItem::separator(),
-            ContextMenuItem::with_submenus("Lotus Commands", "/", commands),
+            ContextMenuItem::with_submenus("Lotus", "/", commands),
         ];
 
         Self {
@@ -359,7 +359,7 @@ impl ContextMenu {
                 bitmap.fill_rect(px + 3, cur_y as usize, pw.saturating_sub(6), self.item_height as usize, 0x00000080);
             }
             let text_color = if is_hot { ColorRgba::WHITE } else { ColorRgba::BLACK };
-            let hint_color = if is_hot { ColorRgba::WHITE } else { ColorRgba::rgb(96, 96, 96) };
+            let hint_color = if is_hot { ColorRgba::WHITE } else { ColorRgba::rgb(255, 0, 0) };
 
             vec_buf.set_color(text_color);
             vec_buf.set_width(1.0);
@@ -455,8 +455,9 @@ mod tests {
         assert_eq!(menu.items[3].label, "Clear");
         assert_eq!(menu.items[3].shortcut, "Del");
         assert!(menu.items[4].is_separator);
-        assert_eq!(menu.items[5].label, "Lotus Commands");
-        assert_eq!(menu.items[5].submenus.len(), 5);
+        assert_eq!(menu.items[5].label, "Lotus");
+        assert_eq!(menu.items[5].submenus.len(), default_lotus_menu().len(), "one entry per top-level command");
+        assert_eq!(menu.items[5].submenus[0].label, "Worksheet");
 
         // Check nested File -> Save (/FS)
         let file_menu = menu.items[5].submenus.iter().find(|m| m.label == "File").unwrap();
@@ -499,10 +500,11 @@ mod tests {
         assert_eq!(menu.path, vec![5]);
         assert_eq!(menu.panels().len(), 2);
 
-        // Level 1 -> "File" (row 1)
+        // Level 1 -> "File" (wherever the command tree puts it)
+        let file_row = menu.items[5].submenus.iter().position(|m| m.label == "File").unwrap();
         let p1 = menu.panels()[1].rect;
-        menu.handle_mouse_move(p1.min_x + 20.0, row_y(p1, 1, 22.0));
-        assert_eq!(menu.path, vec![5, 1]);
+        menu.handle_mouse_move(p1.min_x + 20.0, row_y(p1, file_row, 22.0));
+        assert_eq!(menu.path, vec![5, file_row]);
         assert_eq!(menu.panels().len(), 3, "File's submenu must open as a third panel");
 
         // Level 2 -> "Save" (row 0) triggers /FS

@@ -26,6 +26,32 @@ const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const VK_MENU: i32 = 0x12; // Alt
 
+// Keys and messages beyond what win32.rs declares.
+const VK_TAB: usize = 0x09;
+const VK_PRIOR: usize = 0x21; // Page Up
+const VK_NEXT: usize = 0x22; // Page Down
+const VK_END: usize = 0x23;
+const VK_HOME: usize = 0x24;
+const VK_F1: usize = 0x70;
+const VK_F12: usize = 0x7B;
+const WM_LBUTTONUP: u32 = 0x0202;
+const WM_RBUTTONUP: u32 = 0x0205;
+const WM_MOUSEWHEEL: u32 = 0x020A;
+const WM_MOUSEHWHEEL: u32 = 0x020E;
+const MK_LBUTTON: usize = 0x0001;
+const MK_SHIFT: usize = 0x0004;
+/// One wheel notch is 120 units; a notch scrolls three rows.
+const WHEEL_DELTA: i32 = 120;
+const ROWS_PER_NOTCH: i32 = 3;
+
+// While the left button is held the window keeps receiving mouse moves, even
+// outside it, so a drag selection can run past the window edge.
+#[link(name = "user32")]
+extern "system" {
+    fn SetCapture(hwnd: HWND) -> HWND;
+    fn ReleaseCapture() -> i32;
+}
+
 /// The OS services `App` asks for, answered by Windows.
 struct Win32Host {
     hwnd: HWND,
@@ -61,8 +87,7 @@ unsafe fn current_mods() -> Mods {
     }
 }
 
-/// Virtual-key code to `Key`. Letters only count as chords (Ctrl held);
-/// plain typing arrives separately through WM_CHAR.
+/// Virtual-key code to `Key`.
 fn translate_key(vk: usize, mods: Mods) -> Option<Key> {
     match vk {
         VK_UP => Some(Key::Up),
@@ -73,7 +98,15 @@ fn translate_key(vk: usize, mods: Mods) -> Option<Key> {
         VK_ESCAPE => Some(Key::Escape),
         VK_BACK => Some(Key::Backspace),
         VK_DELETE => Some(Key::Delete),
+        VK_HOME => Some(Key::Home),
+        VK_END => Some(Key::End),
+        VK_PRIOR => Some(Key::PageUp),
+        VK_NEXT => Some(Key::PageDown),
+        VK_TAB => Some(Key::Tab),
+        VK_F1..=VK_F12 => Some(Key::F((vk - VK_F1 + 1) as u8)),
+        // Letters and digits only count as chords (Ctrl held); plain typing arrives via WM_CHAR.
         0x41..=0x5A if mods.ctrl => Some(Key::Char((vk as u8).to_ascii_lowercase() as char)),
+        0x30..=0x39 if mods.ctrl => Some(Key::Char(vk as u8 as char)),
         _ => None,
     }
 }
@@ -82,6 +115,11 @@ fn pointer_pos(lparam: isize) -> (f32, f32) {
     let x = (lparam & 0xFFFF) as i16 as f32;
     let y = ((lparam >> 16) & 0xFFFF) as i16 as f32;
     (x, y)
+}
+
+/// Wheel rotation carried in the high word of `wparam`, as signed units.
+fn wheel_delta(wparam: usize) -> i32 {
+    i32::from(((wparam >> 16) & 0xFFFF) as u16 as i16)
 }
 
 unsafe fn paint(hwnd: HWND, app: &mut App) {
@@ -140,8 +178,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: usize, lpara
             height: ((lparam >> 16) & 0xFFFF) as usize,
         }),
         WM_LBUTTONDOWN => {
+            SetCapture(hwnd);
             let (x, y) = pointer_pos(lparam);
             Some(Event::PointerDown { x, y, button: PointerButton::Left })
+        }
+        WM_LBUTTONUP => {
+            ReleaseCapture();
+            let (x, y) = pointer_pos(lparam);
+            Some(Event::PointerUp { x, y, button: PointerButton::Left })
+        }
+        WM_RBUTTONUP => {
+            let (x, y) = pointer_pos(lparam);
+            Some(Event::PointerUp { x, y, button: PointerButton::Right })
         }
         WM_RBUTTONDOWN => {
             let (x, y) = pointer_pos(lparam);
@@ -149,7 +197,20 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: usize, lpara
         }
         WM_MOUSEMOVE => {
             let (x, y) = pointer_pos(lparam);
-            Some(Event::PointerMove { x, y })
+            Some(Event::PointerMove { x, y, left_down: wparam & MK_LBUTTON != 0 })
+        }
+        WM_MOUSEWHEEL => {
+            // Wheel up is positive; scrolling up is fewer rows. Shift+wheel scrolls sideways.
+            let amount = -(wheel_delta(wparam) * ROWS_PER_NOTCH) / WHEEL_DELTA;
+            if wparam & MK_SHIFT != 0 {
+                Some(Event::Scroll { cols: amount, rows: 0 })
+            } else {
+                Some(Event::Scroll { cols: 0, rows: amount })
+            }
+        }
+        WM_MOUSEHWHEEL => {
+            let amount = (wheel_delta(wparam) * ROWS_PER_NOTCH) / WHEEL_DELTA;
+            Some(Event::Scroll { cols: amount, rows: 0 })
         }
         WM_KEYDOWN => {
             let mods = current_mods();

@@ -269,7 +269,7 @@ fn test_context_menu_with_nested_lotus_commands_and_workspace_view() {
     // Submenu is popped out: hover over "File" -> "Save" (/FS)
     let (sub_rect, sub_items) = context_menu.submenu_bounds().unwrap();
     assert!(sub_rect.min_x > 80.0);
-    assert_eq!(sub_items.len(), 5);
+    assert_eq!(sub_items.len(), 9);
 
     // Click on "Cut" in the main menu (item 0 at y = 120 + 4 + 10 = 134.0)
     context_menu.open_at(80.0, 120.0);

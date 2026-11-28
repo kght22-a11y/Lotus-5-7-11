@@ -52,6 +52,32 @@ impl VectorWorkspaceView {
         self.scroll_row = new_row;
     }
 
+    /// Scroll the minimum distance needed so `coord` is fully inside a window
+    /// of `view_w` x `view_h` pixels. A cell wider than the window is aligned
+    /// to its left edge instead.
+    pub fn ensure_visible(&mut self, sheet: &Sheet, coord: Coord, view_w: f32, view_h: f32) {
+        if coord.col < self.scroll_col {
+            self.scroll_col = coord.col;
+        } else {
+            while self.scroll_col < coord.col && self.cell_rect(sheet, coord).max_x > view_w {
+                self.scroll_col += 1;
+            }
+        }
+        if coord.row < self.scroll_row {
+            self.scroll_row = coord.row;
+        } else {
+            while self.scroll_row < coord.row && self.cell_rect(sheet, coord).max_y > view_h {
+                self.scroll_row += 1;
+            }
+        }
+    }
+
+    /// How many default-height rows fit in a window `view_h` pixels tall.
+    pub fn rows_per_page(&self, sheet: &Sheet, view_h: f32) -> u32 {
+        let grid_h = (view_h - self.control_panel_height - self.header_row_height).max(0.0);
+        ((grid_h / sheet.default_row_height.max(1.0)) as u32).max(1)
+    }
+
     /// Calculate the top-left (x, y) and (width, height) bounding rectangle of a grid cell
     /// relative to the current viewport scroll position.
     pub fn cell_rect(&self, sheet: &Sheet, coord: Coord) -> Rect2D {
@@ -192,8 +218,14 @@ impl VectorWorkspaceView {
 
         let mode_str = if session.menu.is_active {
             "[MENU]"
+        } else if session.edit_prompt.is_some() {
+            "[PROMPT]"
         } else if session.edit_buffer.is_some() {
             "[EDIT]"
+        } else if session.extend_mode {
+            "[EXTEND]"
+        } else if session.selection().is_some() {
+            "[SELECT]"
         } else {
             "[READY]"
         };
@@ -209,7 +241,7 @@ impl VectorWorkspaceView {
             vec_buf.set_color(ColorRgba::rgb(0, 230, 160)); // Cyan / Lotus Accent
             font.draw_string(&menu_l1, 10.0, 40.0, 0.70, vec_buf);
         } else if let Some(ref edit_text) = session.edit_buffer {
-            let prefix = "EDIT: ";
+            let prefix = session.edit_prompt.as_deref().unwrap_or("EDIT: ");
             let (pw, _) = font.measure_string(prefix, 0.75);
 
             // Highlight selected text range in Navy Blue behind text
@@ -243,7 +275,12 @@ impl VectorWorkspaceView {
             vec_buf.line_to(cur_x, 44.0);
         } else {
             vec_buf.set_color(ColorRgba::rgb(140, 160, 180));
-            font.draw_string("READY (Press '/' for Lotus Menu, Right-Click for Context Menu)", 10.0, 40.0, 0.65, vec_buf);
+            let message = session.status_message.as_str();
+            if message.is_empty() || message == "READY" {
+                font.draw_string("READY (Press '/' for Lotus Menu, Right-Click for Context Menu)", 10.0, 40.0, 0.65, vec_buf);
+            } else {
+                font.draw_string(message, 10.0, 40.0, 0.65, vec_buf);
+            }
         }
 
         // 3. Headers & Grid Dimensions
@@ -303,6 +340,24 @@ impl VectorWorkspaceView {
             r += 1;
         }
 
+        // 5b. Highlight the selected range behind the cells.
+        if let Some(range) = session.selection() {
+            for &r in &visible_rows {
+                for &c in &visible_cols {
+                    if range.contains(Coord::new(c, r)) {
+                        let rect = self.cell_rect(sheet, Coord::new(c, r));
+                        let x0 = rect.min_x.max(self.header_col_width);
+                        let y0 = rect.min_y.max(grid_y0);
+                        let x1 = rect.max_x.min(bmp_w);
+                        let y1 = rect.max_y.min(bmp_h);
+                        if x1 > x0 && y1 > y0 {
+                            bitmap.fill_rect(x0 as usize, y0 as usize, (x1 - x0) as usize, (y1 - y0) as usize, 0x00183050);
+                        }
+                    }
+                }
+            }
+        }
+
         // 6. Render Spreadsheet Cells
         for &r in &visible_rows {
             for &c in &visible_cols {
@@ -311,33 +366,23 @@ impl VectorWorkspaceView {
                     let rect = self.cell_rect(sheet, coord);
 
                     // Cell content string
-                    let display_val = match &cell.value {
-                        CellValue::Number(n) => format!("{:.2}", n),
-                        CellValue::Text(t) => t.clone(),
-                        CellValue::Formula { cached_num, cached_text, cached_bool, .. } => {
-                            cached_num.map(|n| format!("{:.2}", n))
-                                .or_else(|| cached_bool.map(|b| if b { "TRUE".into() } else { "FALSE".into() }))
-                                .or_else(|| cached_text.clone())
-                                .unwrap_or_else(|| "<...>".into())
-                        }
-                        CellValue::Boolean(b) => (if *b { "TRUE" } else { "FALSE" }).into(),
-                        CellValue::Basic { .. } => "[BASIC]".into(),
-                        CellValue::Blob { .. } => "[BLOB]".into(),
-                        CellValue::Error(e) => format!("#ERR: {}", e),
-                        CellValue::Empty => String::new(),
-                    };
+                    let display_val = cell.value.display_text();
 
-                    if !display_val.is_empty() {
+                    // Text needs room: collapsed rows and columns show no text.
+                    if !display_val.is_empty() && rect.height() >= 20.0 && rect.width() >= 16.0 {
                         let text_color = match &cell.value {
                             CellValue::Formula { .. } => ColorRgba::rgb(100, 220, 255), // Cyan for formulas
                             CellValue::Number(_) => ColorRgba::rgb(230, 240, 255),
                             _ => ColorRgba::rgb(210, 220, 230),
                         };
+                        let numeric = matches!(&cell.value, CellValue::Number(_))
+                            || matches!(&cell.value, CellValue::Formula { cached_num: Some(_), .. });
+                        let shown = fit_text(font, &display_val, self.font_scale, rect.width() - 10.0, numeric);
 
                         vec_buf.set_color(text_color);
                         let text_x = rect.min_x + 6.0;
                         let text_y = rect.min_y + 16.0;
-                        font.draw_string(&display_val, text_x, text_y, self.font_scale, vec_buf);
+                        font.draw_string(&shown, text_x, text_y, self.font_scale, vec_buf);
                     }
 
                     // Check for obfuscated data indicator (red notch)
@@ -376,6 +421,35 @@ impl VectorWorkspaceView {
             vec_buf.clear();
         }
     }
+}
+
+/// `text` cut down to fit `max_w` pixels. A number that cannot fit shows as
+/// `####` rather than a misleading prefix of its digits.
+fn fit_text(font: &HersheyFont, text: &str, scale: f32, max_w: f32, numeric: bool) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    let (full, _) = font.measure_string(text, scale);
+    if full <= max_w {
+        return text.into();
+    }
+    if numeric {
+        let (hash_w, _) = font.measure_string("#", scale);
+        let n = if hash_w > 0.0 { (max_w / hash_w) as usize } else { 0 };
+        return "#".repeat(n);
+    }
+    let mut out = String::new();
+    let mut used = 0.0;
+    for ch in text.chars() {
+        let mut buf = [0u8; 4];
+        let (w, _) = font.measure_string(ch.encode_utf8(&mut buf), scale);
+        if used + w > max_w {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -462,5 +536,134 @@ mod tests {
         view.pan(-1, -1);
         assert_eq!(view.scroll_col, 0);
         assert_eq!(view.scroll_row, 0);
+    }
+
+    // ---- scrolling to the cursor, clipping, status, selection --------------
+
+    #[test]
+    fn ensure_visible_scrolls_only_as_far_as_needed() {
+        let sheet = Sheet::new("s", "S");
+        let mut view = VectorWorkspaceView::new();
+
+        view.ensure_visible(&sheet, Coord::new(2, 3), 800.0, 600.0);
+        assert_eq!((view.scroll_col, view.scroll_row), (0, 0), "already visible: no scroll");
+
+        view.ensure_visible(&sheet, Coord::new(30, 0), 800.0, 600.0);
+        assert!(view.scroll_col > 0);
+        assert!(view.cell_rect(&sheet, Coord::new(30, 0)).max_x <= 800.0);
+        assert_eq!(view.cell_rect(&sheet, Coord::new(30, 0)).max_x > 700.0, true, "scrolled just enough, not more");
+
+        view.ensure_visible(&sheet, Coord::new(0, 50), 800.0, 600.0);
+        assert!(view.cell_rect(&sheet, Coord::new(0, 50)).max_y <= 600.0);
+
+        view.ensure_visible(&sheet, Coord::new(0, 0), 800.0, 600.0);
+        assert_eq!((view.scroll_col, view.scroll_row), (0, 0), "back to the corner");
+    }
+
+    #[test]
+    fn a_cell_wider_than_the_window_is_aligned_to_its_left_edge() {
+        let mut sheet = Sheet::new("s", "S");
+        sheet.set_col_width(5, 1_000.0);
+        let mut view = VectorWorkspaceView::new();
+        view.ensure_visible(&sheet, Coord::new(5, 0), 400.0, 600.0);
+        assert_eq!(view.scroll_col, 5);
+    }
+
+    #[test]
+    fn a_page_is_the_number_of_default_rows_that_fit() {
+        let sheet = Sheet::new("s", "S");
+        let view = VectorWorkspaceView::new();
+        assert_eq!(view.rows_per_page(&sheet, 600.0), 22); // (600 - 48 - 24) / 24
+        assert_eq!(view.rows_per_page(&sheet, 10.0), 1, "never zero");
+    }
+
+    #[test]
+    fn fit_text_clips_text_and_hashes_numbers_that_do_not_fit() {
+        let font = HersheyFont::load_simplex();
+        let scale = 0.75;
+        let (full, _) = font.measure_string("Projection Summary", scale);
+
+        assert_eq!(fit_text(&font, "Projection Summary", scale, full + 1.0, false), "Projection Summary");
+        let clipped = fit_text(&font, "Projection Summary", scale, full / 2.0, false);
+        assert!(!clipped.is_empty() && clipped.len() < "Projection Summary".len());
+        assert!("Projection Summary".starts_with(&clipped));
+        assert!(font.measure_string(&clipped, scale).0 <= full / 2.0);
+
+        let hashes = fit_text(&font, "12345678.00", scale, 30.0, true);
+        assert!(!hashes.is_empty() && hashes.chars().all(|c| c == '#'), "{hashes:?}");
+        assert_eq!(fit_text(&font, "anything", scale, 0.0, false), "");
+    }
+
+    /// Only the grid area of a frame (below the 72px control panel), so a test about
+    /// what the grid draws is not disturbed by the info line above it.
+    fn grid_of(frame: &[u32]) -> Vec<u32> {
+        frame[72 * 800..].to_vec()
+    }
+
+    fn frame(session: &WorkspaceSession, sheet: &Sheet, view: &VectorWorkspaceView) -> Vec<u32> {
+        let font = HersheyFont::load_simplex();
+        let mut bitmap = Bitmap::new(800, 600);
+        let mut vec_buf = VectorBuffer::with_capacity(1024);
+        let menu = ContextMenu::default_context_menu();
+        view.render(sheet, session, &menu, &mut bitmap, &mut vec_buf, &font);
+        bitmap.pixels.clone()
+    }
+
+    #[test]
+    fn the_status_message_is_drawn_and_the_hint_returns_when_it_is_cleared() {
+        let sheet = Sheet::new("s", "S");
+        let view = VectorWorkspaceView::new();
+        let mut session = WorkspaceSession::new();
+        session.status_message = "READY".into();
+        let idle = frame(&session, &sheet, &view);
+
+        session.status_message = "Saved workbook to demo.lotus".into();
+        assert!(frame(&session, &sheet, &view) != idle, "the message shows");
+
+        session.status_message = "READY".into();
+        assert!(frame(&session, &sheet, &view) == idle, "back to the hint line");
+    }
+
+    #[test]
+    fn a_selected_range_is_highlighted_behind_the_cells() {
+        let sheet = Sheet::new("s", "S");
+        let view = VectorWorkspaceView::new();
+        let mut session = WorkspaceSession::new();
+        session.cursor = Coord::new(2, 4); // C5
+        let plain = frame(&session, &sheet, &view);
+
+        session.selection_anchor = Some(Coord::new(3, 5)); // D6
+        let selected = frame(&session, &sheet, &view);
+        assert!(selected != plain, "selecting changes the picture");
+
+        let r = view.cell_rect(&sheet, Coord::new(3, 5));
+        let (x, y) = (((r.min_x + r.max_x) / 2.0) as usize, ((r.min_y + r.max_y) / 2.0) as usize);
+        assert_eq!(selected[y * 800 + x], 0x00183050, "the far corner cell is tinted");
+        assert!(plain[y * 800 + x] != 0x00183050);
+    }
+
+    #[test]
+    fn collapsed_rows_and_columns_draw_no_text() {
+        let view = VectorWorkspaceView::new();
+        let session = WorkspaceSession::new();
+        let mut with_text = Sheet::new("s", "S");
+        with_text.set_cell(Cell::text(Coord::new(0, 0), "visible"));
+        let mut without = Sheet::new("s", "S");
+        let grid = |sheet: &Sheet| grid_of(&frame(&session, sheet, &view));
+
+        // sanity: at normal size the text shows up in the grid
+        assert!(grid(&with_text) != grid(&without), "text is drawn at normal size");
+
+        // collapse the row: the grid is the same with or without the text
+        with_text.set_row_height(0, 8.0);
+        without.set_row_height(0, 8.0);
+        assert!(grid(&with_text) == grid(&without), "a collapsed row draws no text");
+
+        // and for a collapsed column
+        with_text.set_row_height(0, 24.0);
+        without.set_row_height(0, 24.0);
+        with_text.set_col_width(0, 10.0);
+        without.set_col_width(0, 10.0);
+        assert!(grid(&with_text) == grid(&without), "a collapsed column draws no text");
     }
 }

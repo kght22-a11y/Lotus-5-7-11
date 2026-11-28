@@ -855,6 +855,36 @@ fn handle_menu_action(
                 );
             }
         }
+        // The terminal view is a window onto the workbook; spreadsheet editing
+        // lives in the GUI. Listed one by one (no wildcard) so that adding a
+        // MenuAction still makes this match fail to compile until it is decided.
+        MenuAction::EditUndo
+        | MenuAction::EditRedo
+        | MenuAction::EditCut
+        | MenuAction::EditCopy
+        | MenuAction::EditPaste
+        | MenuAction::EditClear
+        | MenuAction::EditSelectAll
+        | MenuAction::EditFind
+        | MenuAction::EditFindNext
+        | MenuAction::EditGoTo
+        | MenuAction::InsertColumn
+        | MenuAction::DeleteColumn
+        | MenuAction::ColumnWidth
+        | MenuAction::ColumnFit
+        | MenuAction::ColumnCollapse
+        | MenuAction::ColumnExpand
+        | MenuAction::InsertRow
+        | MenuAction::DeleteRow
+        | MenuAction::RowHeight
+        | MenuAction::RowCollapse
+        | MenuAction::RowExpand
+        | MenuAction::FillDown
+        | MenuAction::FillRight
+        | MenuAction::SortAscending
+        | MenuAction::SortDescending => {
+            session.status_message = "Editing commands are in the GUI (lotus-gui); this terminal view is read-only.".into();
+        }
     }
     Ok(false)
 }

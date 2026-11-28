@@ -1,12 +1,13 @@
 //! Interactive spreadsheet workspace session and cursor state machine.
 
 #[cfg(not(feature = "std"))]
-use alloc::{format, string::String};
+use alloc::{format, string::{String, ToString}};
 
 use super::menu::MenuState;
 use crate::{
     calc::CalcEngine,
     model::{Cell, CellValue, Coord, Sheet, TableOfContents},
+    ops::Range,
 };
 
 pub struct WorkspaceSession {
@@ -14,6 +15,13 @@ pub struct WorkspaceSession {
     pub edit_buffer: Option<String>,
     pub edit_cursor: usize,
     pub edit_selection_anchor: Option<usize>,
+    /// When the edit line is answering a question (Find, Go to, column width)
+    /// instead of editing a cell, the question shown in front of it.
+    pub edit_prompt: Option<String>,
+    /// The other corner of a multi-cell selection; the cursor is the first corner.
+    pub selection_anchor: Option<Coord>,
+    /// Extend mode (F8): arrow keys grow the selection instead of clearing it.
+    pub extend_mode: bool,
     pub menu: MenuState,
     pub status_message: String,
     pub is_dirty: bool,
@@ -77,6 +85,9 @@ impl WorkspaceSession {
             edit_buffer: None,
             edit_cursor: 0,
             edit_selection_anchor: None,
+            edit_prompt: None,
+            selection_anchor: None,
+            extend_mode: false,
             menu: MenuState::new(),
             status_message: "READY (Press '/' for Lotus Menu, Enter to edit cell)".into(),
             is_dirty: false,
@@ -119,6 +130,7 @@ impl WorkspaceSession {
         self.edit_buffer = None;
         self.edit_cursor = 0;
         self.edit_selection_anchor = None;
+        self.edit_prompt = None;
         self.status_message = "READY".into();
     }
 
@@ -126,38 +138,113 @@ impl WorkspaceSession {
         self.edit_cursor = 0;
         self.edit_selection_anchor = None;
         if let Some(text) = self.edit_buffer.take() {
-            let text = text.trim();
-            if text.is_empty() {
+            let cell_val = CellValue::parse_input(&text);
+            if cell_val.is_empty() {
                 sheet.cells.remove(&self.cursor);
+            } else if let Some(cell) = sheet.cells.get_mut(&self.cursor) {
+                cell.value = cell_val;
             } else {
-                let cell_val = if text.starts_with('=') {
-                    CellValue::Formula {
-                        expr: text.into(),
-                        cached_num: None,
-                        cached_text: None,
-                        cached_bool: None,
-                    }
-                } else if let Ok(n) = text.parse::<f64>() {
-                    CellValue::Number(n)
-                } else if text.eq_ignore_ascii_case("true") {
-                    CellValue::Boolean(true)
-                } else if text.eq_ignore_ascii_case("false") {
-                    CellValue::Boolean(false)
-                } else {
-                    CellValue::Text(text.into())
-                };
-
-                if let Some(cell) = sheet.cells.get_mut(&self.cursor) {
-                    cell.value = cell_val;
-                } else {
-                    sheet.set_cell(Cell::new(self.cursor, cell_val));
-                }
+                sheet.set_cell(Cell::new(self.cursor, cell_val));
             }
 
             // Recalculate sheet
             let _ = CalcEngine::recalculate_sheet(sheet, None);
             self.status_message = format!("Cell {} updated.", self.cursor.to_a1());
         }
+    }
+
+    /// The selected cells, if more than one cell is selected.
+    pub fn selection(&self) -> Option<Range> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.cursor { None } else { Some(Range::new(anchor, self.cursor)) }
+    }
+
+    /// The selected cells, or just the cursor cell when nothing else is selected.
+    pub fn selected_range(&self) -> Range {
+        self.selection().unwrap_or_else(|| Range::cell(self.cursor))
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+        self.extend_mode = false;
+    }
+
+    /// Start typing into an empty edit line (typing over a cell replaces it).
+    pub fn begin_blank_edit(&mut self) {
+        self.edit_buffer = Some(String::new());
+        self.edit_cursor = 0;
+        self.edit_selection_anchor = None;
+        self.edit_prompt = None;
+        self.status_message = "EDIT (Enter to commit, Esc to cancel)".into();
+    }
+
+    /// Use the edit line to ask a question; the answer comes back through [`end_prompt`](Self::end_prompt).
+    pub fn begin_prompt(&mut self, label: &str) {
+        self.begin_blank_edit();
+        self.edit_prompt = Some(label.into());
+        self.status_message = format!("{} (Enter to accept, Esc to cancel)", label.trim_end_matches([':', ' ']));
+    }
+
+    /// Finish a prompt and return what was typed.
+    pub fn end_prompt(&mut self) -> Option<String> {
+        self.edit_prompt = None;
+        self.edit_cursor = 0;
+        self.edit_selection_anchor = None;
+        self.edit_buffer.take()
+    }
+
+    /// Move the edit caret to `pos` (a byte index on a character boundary),
+    /// extending the text selection when `select` is held.
+    fn set_edit_cursor(&mut self, pos: usize, select: bool) {
+        if select {
+            if self.edit_selection_anchor.is_none() {
+                self.edit_selection_anchor = Some(self.edit_cursor);
+            }
+        } else {
+            self.edit_selection_anchor = None;
+        }
+        self.edit_cursor = pos;
+    }
+
+    /// Home: caret to the start of the edit line.
+    pub fn edit_home(&mut self, select: bool) {
+        if self.edit_buffer.is_some() {
+            self.set_edit_cursor(0, select);
+        }
+    }
+
+    /// End: caret to the end of the edit line.
+    pub fn edit_end(&mut self, select: bool) {
+        if let Some(len) = self.edit_buffer.as_ref().map(|b| b.len()) {
+            self.set_edit_cursor(len, select);
+        }
+    }
+
+    /// Select the whole edit line.
+    pub fn edit_select_all(&mut self) {
+        if let Some(len) = self.edit_buffer.as_ref().map(|b| b.len()) {
+            self.edit_selection_anchor = Some(0);
+            self.edit_cursor = len;
+        }
+    }
+
+    /// Ctrl+Left / Ctrl+Right: move the caret a word at a time.
+    pub fn move_edit_word(&mut self, direction: i32, select: bool) {
+        let Some(buf) = self.edit_buffer.as_ref() else { return };
+        let pos = self.edit_cursor.min(buf.len());
+        let target = if direction < 0 {
+            let before = &buf[..pos];
+            let trimmed = before.trim_end().len();
+            before[..trimmed].rfind(char::is_whitespace).map_or(0, |i| {
+                i + before[i..].chars().next().map_or(1, char::len_utf8)
+            })
+        } else {
+            let after = &buf[pos..];
+            let word_end = after.find(char::is_whitespace).unwrap_or(after.len());
+            let rest = &after[word_end..];
+            pos + word_end + (rest.len() - rest.trim_start().len())
+        };
+        self.set_edit_cursor(target, select);
     }
 
     /// Returns the active selection byte range `(start, end)` if any text is selected.
@@ -365,5 +452,111 @@ impl WorkspaceSession {
         ));
 
         screen
+    }
+}
+
+#[cfg(test)]
+mod selection_and_prompt_tests {
+    use super::WorkspaceSession;
+    use crate::model::Coord;
+    use crate::ops::Range;
+
+    fn editing(text: &str, caret: usize) -> WorkspaceSession {
+        let mut s = WorkspaceSession::new();
+        s.edit_buffer = Some(text.into());
+        s.edit_cursor = caret;
+        s
+    }
+
+    #[test]
+    fn a_cell_selection_is_the_cursor_plus_the_anchor() {
+        let mut s = WorkspaceSession::new();
+        s.cursor = Coord::new(2, 2);
+        assert_eq!(s.selection(), None);
+        assert_eq!(s.selected_range(), Range::cell(Coord::new(2, 2)));
+
+        s.selection_anchor = Some(Coord::new(0, 0));
+        assert_eq!(s.selection(), Some(Range::new(Coord::new(0, 0), Coord::new(2, 2))));
+        assert_eq!(s.selected_range().to_a1(), "A1:C3");
+
+        s.selection_anchor = Some(Coord::new(2, 2));
+        assert_eq!(s.selection(), None, "an anchor on the cursor is not a range");
+
+        s.extend_mode = true;
+        s.clear_selection();
+        assert_eq!((s.selection_anchor, s.extend_mode), (None, false));
+    }
+
+    #[test]
+    fn home_end_and_select_all_move_and_select() {
+        let mut s = editing("hello", 2);
+        s.edit_end(true);
+        assert_eq!((s.edit_cursor, s.selected_text().as_deref()), (5, Some("llo")));
+        s.edit_home(false);
+        assert_eq!((s.edit_cursor, s.selected_text()), (0, None), "moving without Shift drops the selection");
+        s.edit_select_all();
+        assert_eq!(s.selected_text().as_deref(), Some("hello"));
+
+        let mut none = WorkspaceSession::new();
+        none.edit_home(false); // not editing: nothing happens, nothing panics
+        none.edit_end(true);
+        none.edit_select_all();
+    }
+
+    #[test]
+    fn word_movement_skips_runs_of_spaces() {
+        let mut s = editing("one   two  three", 0);
+        s.move_edit_word(1, false);
+        assert_eq!(s.edit_cursor, 6, "to the start of 'two'");
+        s.move_edit_word(1, false);
+        assert_eq!(s.edit_cursor, 11, "to the start of 'three'");
+        s.move_edit_word(1, false);
+        assert_eq!(s.edit_cursor, 16, "to the end");
+        s.move_edit_word(-1, false);
+        assert_eq!(s.edit_cursor, 11);
+        s.move_edit_word(-1, false);
+        assert_eq!(s.edit_cursor, 6);
+        s.move_edit_word(-1, false);
+        assert_eq!(s.edit_cursor, 0);
+        s.move_edit_word(-1, false);
+        assert_eq!(s.edit_cursor, 0, "stays at the start");
+    }
+
+    #[test]
+    fn word_movement_extends_a_selection_and_respects_multibyte_text() {
+        let mut s = editing("héllo wörld", 0);
+        s.move_edit_word(1, true);
+        assert_eq!(s.selected_text().as_deref(), Some("héllo "));
+        s.move_edit_word(1, true);
+        assert_eq!(s.selected_text().as_deref(), Some("héllo wörld"));
+        s.move_edit_word(-1, false);
+        assert_eq!(s.edit_cursor, "héllo ".len(), "lands on a character boundary");
+    }
+
+    #[test]
+    fn a_prompt_collects_an_answer_and_cleans_up() {
+        let mut s = WorkspaceSession::new();
+        s.begin_prompt("Find: ");
+        assert_eq!(s.edit_prompt.as_deref(), Some("Find: "));
+        assert_eq!(s.edit_buffer.as_deref(), Some(""));
+        s.insert_str("abc");
+        assert_eq!(s.end_prompt().as_deref(), Some("abc"));
+        assert_eq!((s.edit_prompt.clone(), s.edit_buffer.clone(), s.edit_cursor), (None, None, 0));
+    }
+
+    #[test]
+    fn cancelling_drops_the_prompt_too() {
+        let mut s = WorkspaceSession::new();
+        s.begin_prompt("Go to: ");
+        s.cancel_editing();
+        assert_eq!((s.edit_prompt, s.edit_buffer), (None, None));
+    }
+
+    #[test]
+    fn typing_over_a_blank_edit_starts_clean() {
+        let mut s = editing("old", 3);
+        s.edit_selection_anchor = Some(0);
+        s.begin_blank_edit();
+        assert_eq!((s.edit_buffer.as_deref(), s.edit_cursor, s.edit_selection_anchor), (Some(""), 0, None));
     }
 }

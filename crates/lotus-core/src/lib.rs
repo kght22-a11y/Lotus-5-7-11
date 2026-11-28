@@ -15,10 +15,12 @@ pub mod doc;
 pub mod history;
 pub mod memory;
 pub mod model;
+pub mod ops;
 pub mod storage;
 pub mod substrate;
 pub mod tui;
 pub mod view;
+pub mod zlayer;
 
 pub use basic::{BasicError, BasicRunner, Turtle};
 pub use calc::CalcEngine;
